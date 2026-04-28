@@ -42,7 +42,7 @@
 
 - 작업은 Phase 순서(Discovery→Extraction→Authoring→Aggregation)로 진행
 - 원본 URL: `https://lsx333.axshare.com/?g=14&id=release_history`
-- `images/`와 `docs/` 폴더 구조 1:1 미러링 유지
+- `flipbook/{section}/` 안에 md+png co-located 배치
 - 추론과 확인된 내용을 문서에서 명확히 구분
 
 ---

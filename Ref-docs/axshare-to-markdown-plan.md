@@ -73,13 +73,17 @@ Phase 4: Aggregation → 통합 README + 섹션별 index 생성
 ## 2. 디렉토리 구조
 
 ```
-project-root/
-├── .claude/
-│   └── commands/
-│       ├── crawl.md            # 사이트맵 크롤
-│       ├── capture.md          # 페이지 일괄 캡처
-│       ├── document.md         # 페이지 1개 markdown 작성
-│       └── aggregate.md        # 통합 문서 생성
+rmsFlipbook/
+├── .claude/                    # Claude Code 환경 (dotclaude 시스템)
+│   ├── agents/                 # 커스텀 에이전트 정의
+│   ├── commands/               # 슬래시 커맨드 (dotclaude + 프로젝트용)
+│   ├── db/                     # Context DB
+│   ├── dist/                   # Hook/HUD 스크립트
+│   ├── scripts/                # 시스템 스크립트
+│   └── settings.json
+├── Ref-docs/
+│   ├── claude/                 # dotclaude 시스템 문서
+│   └── axshare-to-markdown-plan.md  # 이 문서
 ├── scripts/
 │   ├── crawl.mjs               # 사이트맵 추출
 │   ├── capture.mjs             # 스크린샷 + 텍스트 + 인터랙션 추출
@@ -94,35 +98,32 @@ project-root/
 │   ├── 1-overview/
 │   │   └── ...
 │   └── ...
-├── images/                     # 캡처 이미지 (docs와 1:1 미러)
-│   ├── 0-site-entry/
-│   │   └── log-in.png
-│   ├── 1-overview/
-│   │   ├── dashboard-1depth.png
-│   │   ├── dashboard-2depth.png
-│   │   └── ...
-│   └── ...
-├── docs/                       # 최종 markdown 산출물
+├── flipbook/                   # 최종 산출물 (markdown + 이미지 co-located)
 │   ├── README.md               # 전체 개요 + 사이트맵 트리
 │   ├── 00-release-history.md
 │   ├── 00-ia.md
 │   ├── 00-policy.md
 │   ├── 0-site-entry/
 │   │   ├── index.md            # 섹션 개요
-│   │   └── log-in.md
+│   │   ├── log-in.md
+│   │   └── log-in.png
 │   ├── 1-overview/
 │   │   ├── index.md
 │   │   ├── dashboard-1depth.md
+│   │   ├── dashboard-1depth.png
 │   │   ├── dashboard-2depth.md
+│   │   ├── dashboard-2depth.png
 │   │   ├── quick-operation.md
-│   │   └── reports.md
+│   │   ├── quick-operation.png
+│   │   ├── reports.md
+│   │   └── reports.png
 │   └── ...
-├── package.json
-├── playwright.config.mjs
-└── PLAN.md                     # 이 문서
+├── CLAUDE.md
+├── .gitignore
+└── package.json
 ```
 
-**핵심 원칙**: `images/`와 `docs/`의 폴더 구조를 1:1로 미러링. 그러면 markdown에서 `../images/1-overview/dashboard-1depth.png`처럼 깔끔한 상대경로로 참조됩니다.
+**핵심 원칙**: 이미지와 markdown을 같은 섹션 폴더에 co-located 배치. markdown에서 `./page-slug.png`처럼 같은 폴더의 이미지를 바로 참조합니다. 메타 문서(00-*.md)는 `flipbook/` 루트에 위치합니다.
 
 ---
 
@@ -208,7 +209,7 @@ node scripts/crawl.mjs
 
 사이트맵의 모든 페이지를 순회하면서 다음 3가지를 추출합니다:
 
-1. **풀페이지 스크린샷** (PNG) → `images/{section-slug}/{page-slug}.png`
+1. **풀페이지 스크린샷** (PNG) → `flipbook/{section-slug}/{page-slug}.png`
 2. **텍스트 덤프** (innerText) → `raw/{section-slug}/{page-slug}.txt`
 3. **인터랙션 메타데이터** (JSON) → `raw/{section-slug}/{page-slug}.interactions.json`
 
@@ -297,7 +298,7 @@ async function capturePage(context, p) {
   await page.waitForTimeout(1500); // 페이지 전환 애니메이션 여유
 
   // 1) 스크린샷
-  const imgDir = path.join('images', p.sectionSlug);
+  const imgDir = path.join('flipbook', p.sectionSlug);
   await fs.mkdir(imgDir, { recursive: true });
   await page.screenshot({
     path: path.join(imgDir, `${p.pageSlug}.png`),
@@ -363,7 +364,7 @@ node scripts/capture.mjs
 
 ### 4.5 검증 체크리스트
 
-- [ ] `images/` 하위에 모든 페이지의 PNG가 생성됨
+- [ ] `flipbook/` 하위 각 섹션 폴더에 모든 페이지의 PNG가 생성됨
 - [ ] `raw/` 하위에 텍스트 + 인터랙션 JSON이 생성됨
 - [ ] 빈 PNG(흰색만 있는 파일)나 0바이트 파일이 없는지 확인
 - [ ] 한글 텍스트가 깨지지 않고 추출됨
@@ -395,7 +396,7 @@ node scripts/capture.mjs
 
 ## 스크린샷
 
-![{페이지명}](../images/{section-slug}/{page-slug}.png)
+![{페이지명}](./{page-slug}.png)
 
 ## 목적
 
@@ -453,13 +454,13 @@ argument-hint: <section-slug>/<page-slug>
 2. 입력 파일 확인:
    - `raw/$ARGUMENTS.txt` (텍스트 덤프)
    - `raw/$ARGUMENTS.interactions.json` (인터랙션 메타데이터)
-   - `images/$ARGUMENTS.png` (스크린샷, 시각 분석용)
+   - `flipbook/$ARGUMENTS.png` (스크린샷, 시각 분석용)
 
 3. `raw/sitemap.json`을 읽고 해당 페이지의 메타데이터(id, pageName, 부모 섹션) 추출
 
-4. 다음 템플릿으로 `docs/$ARGUMENTS.md` 작성:
+4. 다음 템플릿으로 `flipbook/$ARGUMENTS.md` 작성:
    - 페이지 제목, 경로, 원본 링크
-   - 스크린샷 임베드 (`../images/$ARGUMENTS.png`)
+   - 스크린샷 임베드 (`./{page-slug}.png`, 같은 폴더 내 이미지 참조)
    - 목적: 텍스트 덤프와 스크린샷을 분석해 추론
    - 진입 경로: interactions.json에서 이 페이지로 들어오는 다른 페이지의 링크 추적
    - 화면 구성: 텍스트 덤프를 영역별로 정리한 표
@@ -496,7 +497,7 @@ Round 5: 메타 페이지 + 나머지 섹션
 
 ## 6. Phase 4: Aggregation (통합 문서)
 
-### 6.1 `docs/README.md` (전체 개요)
+### 6.1 `flipbook/README.md` (전체 개요)
 
 ```markdown
 # {프로젝트명} 스펙 문서
@@ -529,7 +530,7 @@ Round 5: 메타 페이지 + 나머지 섹션
 (Mermaid 다이어그램으로 주요 동선 표시 — 선택적)
 ```
 
-### 6.2 `docs/{section}/index.md` (섹션별 개요)
+### 6.2 `flipbook/{section}/index.md` (섹션별 개요)
 
 ```markdown
 # {섹션명}
@@ -560,13 +561,13 @@ description: 통합 README와 섹션별 index.md 생성
 
 다음 작업을 수행하세요:
 
-1. `raw/sitemap.json`과 `docs/` 하위 모든 .md 파일 분석
+1. `raw/sitemap.json`과 `flipbook/` 하위 모든 .md 파일 분석
 
-2. 각 섹션 폴더(`docs/{section-slug}/`)에서:
+2. 각 섹션 폴더(`flipbook/{section-slug}/`)에서:
    - 그 섹션 내 모든 .md 파일을 읽어 "목적" 섹션 추출
    - `index.md` 작성: 페이지 목록 표 + 섹션 내 흐름
 
-3. `docs/README.md` 작성:
+3. `flipbook/README.md` 작성:
    - 메타 문서 링크 (Release History, IA, Policy)
    - 섹션 목록 링크
    - 전체 사이트맵을 마크다운 트리로 표시
@@ -591,10 +592,10 @@ node scripts/crawl.mjs
 
 # Phase 2: Extraction (백그라운드 실행)
 node scripts/capture.mjs
-# → images/, raw/{section}/ 하위 파일들 생성됨
+# → flipbook/{section}/(PNG), raw/{section}/ 하위 파일들 생성됨
 
 # Phase 2 검증 (Claude Code에게 위임 가능)
-# "raw/sitemap.json의 모든 페이지에 대해 images/와 raw/에 산출물이 있는지 확인해줘"
+# "raw/sitemap.json의 모든 페이지에 대해 flipbook/와 raw/에 산출물이 있는지 확인해줘"
 
 # Phase 3: Authoring (Claude Code 슬래시 커맨드)
 /document 0-site-entry/log-in       # 1페이지 검증
@@ -608,7 +609,7 @@ node scripts/capture.mjs
 
 # Phase 4: Aggregation
 /aggregate
-# → docs/README.md, docs/{section}/index.md 생성됨
+# → flipbook/README.md, flipbook/{section}/index.md 생성됨
 ```
 
 ---
@@ -636,7 +637,7 @@ node scripts/capture.mjs
 
 - WebP 변환: `sharp` 라이브러리로 일괄 변환 (용량 70~80% 감소)
 - Git LFS 사용 (대형 리포)
-- 또는 PNG 그대로 두고 `.gitignore`에서 `images/` 제외, 별도 저장소/CDN 업로드
+- 또는 PNG 그대로 두고 `.gitignore`에서 `flipbook/**/*.png` 제외, 별도 저장소/CDN 업로드
 
 ### 8.4 인터랙션 정확도
 
@@ -656,13 +657,13 @@ node scripts/capture.mjs
 - [ ] `raw/sitemap.json` — 마스터 인덱스
 - [ ] `raw/{section}/{page}.txt` — 모든 페이지의 텍스트 덤프
 - [ ] `raw/{section}/{page}.interactions.json` — 모든 페이지의 인터랙션 메타
-- [ ] `images/{section}/{page}.png` — 모든 페이지의 스크린샷
+- [ ] `flipbook/{section}/{page}.png` — 모든 페이지의 스크린샷 (md와 같은 폴더)
 
 ### 작성된 문서
-- [ ] `docs/README.md` — 전체 개요 + 사이트맵 + 흐름 다이어그램
-- [ ] `docs/00-release-history.md`, `docs/00-ia.md`, `docs/00-policy.md` — 메타 문서
-- [ ] `docs/{section}/index.md` — 9개 섹션별 개요
-- [ ] `docs/{section}/{page}.md` — 모든 페이지의 스펙 문서 (약 25개)
+- [ ] `flipbook/README.md` — 전체 개요 + 사이트맵 + 흐름 다이어그램
+- [ ] `flipbook/00-release-history.md`, `flipbook/00-ia.md`, `flipbook/00-policy.md` — 메타 문서
+- [ ] `flipbook/{section}/index.md` — 9개 섹션별 개요
+- [ ] `flipbook/{section}/{page}.md` — 모든 페이지의 스펙 문서 (약 25개)
 
 ### 품질
 - [ ] 모든 markdown의 이미지 경로가 유효 (깨진 링크 없음)
@@ -675,12 +676,12 @@ node scripts/capture.mjs
 
 ## 10. 다음 단계
 
-이 플랜 문서를 Claude Code 환경의 프로젝트 루트에 `PLAN.md`로 저장한 뒤, 다음과 같이 시작하세요:
+이 플랜 문서는 `Ref-docs/axshare-to-markdown-plan.md`에 위치합니다. CLAUDE.md에서 참조되어 있으므로 Claude Code가 자동으로 인식합니다.
 
 ```
-Claude Code에게 전달할 첫 메시지 예시:
+Phase 1 시작 예시:
 
-"PLAN.md를 읽고 Phase 1 작업을 진행해줘.
+"Phase 1 작업을 진행해줘.
 package.json 초기화 → playwright 설치 → scripts/crawl.mjs 작성 → 실행까지.
 실행 결과로 나온 raw/sitemap.json을 보여주고 다음 단계 진행 여부를 물어봐줘."
 ```
@@ -693,7 +694,7 @@ package.json 초기화 → playwright 설치 → scripts/crawl.mjs 작성 → �
 
 ```json
 {
-  "name": "axshare-spec-extractor",
+  "name": "rms-flipbook",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
