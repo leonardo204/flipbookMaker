@@ -1,3 +1,10 @@
+node_modules/
+raw/
+flipbook/**/*.png
+
+# Confluence upload scripts with credentials
+scripts/confluence-upload.mjs
+scripts/confluence-mcp-upload.mjs
 
 # Claude Code runtime
 .claude/db/context.db

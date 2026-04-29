@@ -1,0 +1,15 @@
+{
+  "name": "rms-flipbook",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "crawl": "node scripts/crawl.mjs",
+    "capture": "node scripts/capture.mjs",
+    "capture-sections": "node scripts/capture-sections.mjs",
+    "all": "npm run crawl && npm run capture"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": "^1.48.0"
+  }
+}
