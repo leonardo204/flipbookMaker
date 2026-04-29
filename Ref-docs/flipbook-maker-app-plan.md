@@ -269,6 +269,86 @@ class RateLimiter {
 └─────────────────────────────────────────┘
 ```
 
+### 4.5 설정 화면
+
+앱 좌측 사이드바 또는 상단 메뉴에서 접근하는 설정 페이지. 모든 설정값은 OS 자격증명 관리자(macOS Keychain / Windows Credential Manager)에 암호화 저장.
+
+```
+┌─────────────────────────────────────────┐
+│  Settings                               │
+│                                         │
+│  ── 일반 ──                              │
+│  앱 버전: v1.0.0                         │
+│  [ 업데이트 확인 ]  최신 버전입니다 ✅     │
+│                                         │
+│  ── Claude Code ──                       │
+│  claude 경로: /Users/xxx/.local/bin/claude│
+│  상태: ✅ 연결됨 (claude-opus-4-6)       │
+│  [ 연결 테스트 ]                          │
+│                                         │
+│  ── Confluence ──                        │
+│  Atlassian URL: https://xxx.atlassian.net│
+│  계정 (이메일): user@company.com          │
+│  API 토큰: ●●●●●●●●●●●●                 │
+│  기본 Space Key: NextARMS                │
+│  기본 부모 페이지 URL: (선택)              │
+│  Plan: [ Standard ▼ ]                    │
+│  [ 연결 테스트 ] ✅ 연결 성공              │
+│                                         │
+│  ── 출력 ──                              │
+│  기본 저장 경로: ~/Documents/FlipbookMaker │
+│  [ 폴더 선택 ]                            │
+│                                         │
+│               [ 저장 ]                    │
+└─────────────────────────────────────────┘
+```
+
+**설정 항목 정리:**
+
+| 카테고리 | 항목 | 저장 위치 | 비고 |
+|----------|------|----------|------|
+| 일반 | 앱 버전 | 읽기 전용 | tauri.conf.json에서 가져옴 |
+| 일반 | 자동 업데이트 | 로컬 설정 | on/off 토글 |
+| Claude | claude 경로 | 로컬 설정 | 자동 감지 + 수동 지정 |
+| Confluence | Atlassian URL | 로컬 설정 | 예: https://xxx.atlassian.net/wiki |
+| Confluence | 계정 | 로컬 설정 | 이메일 |
+| Confluence | API 토큰 | OS 자격증명 | Keychain/Credential Manager |
+| Confluence | 기본 Space Key | 로컬 설정 | 업로드 시 기본값 |
+| Confluence | 기본 부모 페이지 | 로컬 설정 | URL 또는 page ID |
+| Confluence | Plan 등급 | 로컬 설정 | rate limit 조절용 |
+| 출력 | 기본 저장 경로 | 로컬 설정 | Markdown 결과물 저장 위치 |
+
+### 4.6 변환 결과 — MD 파일 링크
+
+변환 진행 중 및 완료 후, 생성된 Markdown 파일을 OS 기본 뷰어로 열 수 있는 클릭 가능한 링크를 제공:
+
+```
+┌─────────────────────────────────────────┐
+│  📝 Markdown 변환 중...                  │
+│                                         │
+│  ████████████░░░░░░░░  60% (19/31)     │
+│                                         │
+│  현재: 4.2 Connecting Devices            │
+│                                         │
+│  완료된 문서:                             │
+│  📄 0.1 Log in              [ 열기 ]     │
+│  📄 1.1 Dashboard           [ 열기 ]     │
+│  📄 1.2 Dashboard 2-depth   [ 열기 ]     │
+│  📄 1.3 Quick Operation     [ 열기 ]     │
+│  ...                                    │
+│                                         │
+│  📁 [ 결과 폴더 열기 ]                    │
+│                                         │
+│     [ 중지 ]                             │
+└─────────────────────────────────────────┘
+```
+
+**구현:**
+- `@tauri-apps/plugin-opener`의 `openPath(filePath)`로 OS 기본 앱에서 파일 열기
+- MD 파일: 사용자의 기본 markdown 뷰어(Typora, VS Code 등)로 열림
+- 폴더 열기: Finder/Explorer에서 결과 폴더 열기
+- Confluence 업로드 완료 시: 페이지 URL을 기본 브라우저로 열기 (`openUrl`)
+
 ---
 
 ## 5. 개발 단계
@@ -373,16 +453,34 @@ async function callClaude(prompt: string): Promise<string> {
 
 ---
 
-## 8. Tauri 배포 설정
+## 8. Tauri 배포 설정 (Summa-v2 참조)
 
-### GitHub Releases Auto-Update
+### tauri.conf.json 핵심 설정
 
-```toml
-# src-tauri/tauri.conf.json
+Summa-v2(`/Users/zerolive/work/Summa-v2/src-tauri/tauri.conf.json`) 패턴 기반:
+
+```json
 {
+  "productName": "FlipbookMaker",
+  "identifier": "com.altimedia.flipbookmaker",
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.ico"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "Developer ID Application: YONGSUB LEE (XU8HS9JUTS)"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "timestampUrl": "http://timestamp.digicert.com",
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  },
   "plugins": {
     "updater": {
-      "active": true,
+      "pubkey": "<minisign 공개키>",
       "endpoints": [
         "https://github.com/leonardo204/flipbookMaker/releases/latest/download/latest.json"
       ]
@@ -391,36 +489,41 @@ async function callClaude(prompt: string): Promise<string> {
 }
 ```
 
-### CI/CD (GitHub Actions)
+### Auto-Update 플로우
 
-```yaml
-# .github/workflows/release.yml
-on:
-  push:
-    tags: ['v*']
-jobs:
-  release:
-    strategy:
-      matrix:
-        platform: [macos-latest, windows-latest]
-    steps:
-      - uses: tauri-apps/tauri-action@v0
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'FlipbookMaker ${{ github.ref_name }}'
+1. 앱 시작 시 `@tauri-apps/plugin-updater`로 GitHub Releases latest.json 체크
+2. 새 버전 있으면 설정 화면에 업데이트 알림 표시
+3. 사용자가 "업데이트" 클릭 시 다운로드 + 설치 + 재시작
+
+### 필수 Tauri 플러그인
+
+```json
+{
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.9.0",
+    "@tauri-apps/plugin-shell": "^2.x",
+    "@tauri-apps/plugin-dialog": "^2.x",
+    "@tauri-apps/plugin-fs": "^2.x",
+    "@tauri-apps/plugin-opener": "^2.x"
+  }
+}
 ```
 
 ---
 
 ## 9. 질문/확인 사항
 
-### 확인 필요
+### 확정 사항
 
-1. **Figma 지원 우선순위**: 초기 버전에서 Figma도 지원해야 하는지, 아니면 Axure 먼저 완성 후 확장?
-2. **인증 정보 저장**: Confluence 토큰을 앱 내에 저장할지 (keychain/credential manager) 매번 입력할지?
-3. **오프라인 모드**: Confluence 업로드 없이 Markdown만 생성하는 것도 주요 유스케이스인지?
-4. **다국어**: 현재 한국어 UI만 필요한지, 영어도 필요한지?
-5. **Claude Code 필수**: 사용자 PC에 Claude Code가 설치되어 있어야 하는 전제 조건이 맞는지?
+1. **초기 버전 범위**: Axure(axshare)만 우선 지원. Figma/PDF는 이후 확장
+2. **인증 정보 저장**: OS 네이티브 자격증명 관리자 사용
+   - macOS: Keychain
+   - Windows: Credential Manager
+   - 라이브러리: `keytar` (Node.js, 크로스플랫폼) 또는 Tauri Rust에서 `keyring` crate
+3. **Claude Code 필수**: 사용자 PC에 Claude Code 설치 필수. 미설치 시 변환 버튼 비활성화 + 설치 안내 표시
+4. **오프라인 모드**: Markdown 변환까지는 로컬에서 완결. Confluence 업로드는 선택
 
 ---
 
