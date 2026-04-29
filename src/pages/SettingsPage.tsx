@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 import Button from "../components/Button";
 import TextInput from "../components/TextInput";
 import StatusCard from "../components/StatusCard";
@@ -13,7 +15,7 @@ interface ClaudeTestResult {
   message: string;
 }
 
-type UpdateStatus = "idle" | "checking" | "available" | "latest" | "error";
+type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installing" | "latest" | "error";
 
 const styles = {
   page: {
@@ -114,6 +116,10 @@ function getUpdateStatusText(status: UpdateStatus): string {
       return "확인 중...";
     case "available":
       return "업데이트 가능";
+    case "downloading":
+      return "다운로드 중...";
+    case "installing":
+      return "설치 중...";
     case "latest":
       return "최신 버전입니다";
     case "error":
@@ -149,6 +155,13 @@ export default function SettingsPage() {
 
   // Update
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [updateInfo, setUpdateInfo] = useState<Update | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [appVersion, setAppVersion] = useState("...");
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
+  }, []);
 
   // Confluence
   const [atlassianUrl, setAtlassianUrl] = useState("");
@@ -191,9 +204,39 @@ export default function SettingsPage() {
 
   const handleCheckUpdate = async () => {
     setUpdateStatus("checking");
+    setUpdateInfo(null);
     try {
       const update = await check();
-      setUpdateStatus(update ? "available" : "latest");
+      if (update) {
+        setUpdateInfo(update);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("latest");
+      }
+    } catch {
+      setUpdateStatus("error");
+    }
+  };
+
+  const handleDownloadAndInstall = async () => {
+    if (!updateInfo) return;
+    setUpdateStatus("downloading");
+    setDownloadProgress(0);
+    try {
+      let downloaded = 0;
+      let total = 0;
+      await updateInfo.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data?.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data?.chunkLength ?? 0;
+          if (total > 0) setDownloadProgress(Math.round((downloaded / total) * 100));
+        } else if (event.event === "Finished") {
+          setDownloadProgress(100);
+          setUpdateStatus("installing");
+        }
+      });
+      await relaunch();
     } catch {
       setUpdateStatus("error");
     }
@@ -231,7 +274,7 @@ export default function SettingsPage() {
             <span style={styles.sectionHeader}>일반</span>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>앱 버전</span>
-              <span style={styles.infoValue}>v1.1.0</span>
+              <span style={styles.infoValue}>v{appVersion}</span>
             </div>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>업데이트</span>
@@ -245,17 +288,31 @@ export default function SettingsPage() {
                     }}
                   >
                     {getUpdateStatusText(updateStatus)}
+                    {updateStatus === "downloading" ? ` ${downloadProgress}%` : ""}
                   </span>
                 )}
-                <Button
-                  variant="secondary"
-                  onClick={handleCheckUpdate}
-                  disabled={updateStatus === "checking"}
-                >
-                  {updateStatus === "checking" ? "확인 중..." : "확인"}
-                </Button>
+                {updateStatus === "available" ? (
+                  <Button onClick={handleDownloadAndInstall}>
+                    업데이트
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    onClick={handleCheckUpdate}
+                    disabled={updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing"}
+                  >
+                    {updateStatus === "checking" ? "확인 중..." : "확인"}
+                  </Button>
+                )}
               </div>
             </div>
+            {updateStatus === "downloading" && (
+              <div style={{ padding: "0 0 4px" }}>
+                <div style={{ backgroundColor: "var(--color-surface)", borderRadius: "4px", height: "6px", overflow: "hidden" }}>
+                  <div style={{ backgroundColor: "var(--color-accent)", height: "100%", width: `${downloadProgress}%`, transition: "width 0.3s ease", borderRadius: "4px" }} />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Claude Code */}
