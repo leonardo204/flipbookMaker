@@ -36,7 +36,8 @@
 - [컨벤션](Ref-docs/claude/conventions.md) — 커밋, 주석, 로깅 규칙
 - [셋업](Ref-docs/claude/setup.md) — 새 환경 초기 설정
 - [Agent Delegation](Ref-docs/claude/agent-delegation.md) — 에이전트 위임/파이프라인 상세
-- [작업 플랜](Ref-docs/axshare-to-markdown-plan.md) — axshare→Markdown 변환 4-Phase 실행 플랜
+- [작업 플랜](Ref-docs/axshare-to-markdown-plan.md) — axshare→Markdown 변환 4-Phase 실행 플랜 (완료)
+- [앱 플랜](Ref-docs/flipbook-maker-app-plan.md) — FlipbookMaker 데스크톱 앱 개발 플랜
 
 ### 핵심 규칙
 
