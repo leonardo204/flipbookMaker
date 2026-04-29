@@ -20,13 +20,17 @@
 
 ### 개요
 
-**rmsFlipbook** — axshare 플립북을 Markdown 스펙 문서로 변환하는 프로젝트
+**FlipbookMaker** — 플립북(Axure/Figma)을 Markdown 문서로 변환하고 Confluence에 업로드하는 데스크톱 앱
 
 | 항목 | 값 |
 |------|-----|
-| 기술 스택 | Node.js (ESM), Playwright |
-| 빌드 방법 | `npm install && npx playwright install chromium` |
-| 상태 | 개발 중 |
+| 기술 스택 | Tauri v2 + React + TypeScript |
+| LLM 연동 | Claude Code CLI pipe (`claude --print -p`) |
+| MCP 연동 | @modelcontextprotocol/sdk (TypeScript) |
+| 빌드 방법 | `npm install && npm run tauri:build` |
+| 배포 | GitHub Releases + Tauri auto-update |
+| GitHub | git@github.com:leonardo204/flipbookMaker.git (SSH) |
+| 상태 | 개발 시작 |
 
 ### 상세 문서
 
@@ -36,16 +40,19 @@
 - [컨벤션](Ref-docs/claude/conventions.md) — 커밋, 주석, 로깅 규칙
 - [셋업](Ref-docs/claude/setup.md) — 새 환경 초기 설정
 - [Agent Delegation](Ref-docs/claude/agent-delegation.md) — 에이전트 위임/파이프라인 상세
-- [작업 플랜](Ref-docs/axshare-to-markdown-plan.md) — axshare→Markdown 변환 4-Phase 실행 플랜 (완료)
-- [앱 플랜](Ref-docs/flipbook-maker-app-plan.md) — FlipbookMaker 데스크톱 앱 개발 플랜
+- [변환 플랜](Ref-docs/axshare-to-markdown-plan.md) — axshare→Markdown 변환 로직 레퍼런스 (완료)
+- [앱 플랜](Ref-docs/flipbook-maker-app-plan.md) — FlipbookMaker 앱 개발 플랜 (현재 작업)
+- [Summa-v2 참조](~/work/Summa-v2) — Tauri auto-update, 빌드 설정 패턴
 
 ### 핵심 규칙
 
-- 작업은 Phase 순서(Discovery→Extraction→Authoring→Aggregation)로 진행
-- 원본 URL: `https://lsx333.axshare.com/?g=14&id=release_history`
-- `flipbook/{section}/` 안에 md+png co-located 배치
-- 추론과 확인된 내용을 문서에서 명확히 구분
+- GitHub push는 SSH URL만 사용 (`git@github.com:`)
+- Claude Code 필수 전제: 미설치 시 변환 버튼 비활성화
+- Confluence 인증: OS 자격증명 관리자 사용 (macOS Keychain / Windows Credential Manager)
+- 초기 버전: Axure(axshare)만 지원, Figma/PDF는 이후 확장
+- `flipbook/` 디렉토리는 예제 산출물로 유지 (앱 데모/테스트용)
+- `scripts/`는 변환 엔진의 기반 코드 (TypeScript 모듈로 리팩토링 예정)
 
 ---
 
-*최종 업데이트: 2026-04-28*
+*최종 업데이트: 2026-04-29*
