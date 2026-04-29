@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "FlipbookMaker",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.altimedia.flipbookmaker",
   "build": {
     "frontendDist": "../dist",
@@ -48,6 +48,7 @@
   },
   "plugins": {
     "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3ODkyMzRCM0VGQ0M2N0EKUldSNnh2dytTeU9KNStJenlWbVlhMERoZGdYYWtZWmZQSHRQcysxVkdFeWN0RUlERllZcUdTeEgK",
       "endpoints": [
         "https://github.com/leonardo204/flipbookMaker/releases/latest/download/latest.json"
       ]

@@ -12,6 +12,7 @@ flipbook/
 # Credentials / secrets
 .env
 .env.*
+.tauri/keys/
 scripts/confluence-upload.mjs
 scripts/confluence-mcp-upload.mjs
 

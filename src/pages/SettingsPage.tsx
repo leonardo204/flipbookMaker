@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-// updater는 pubkey 설정 후 활성화
+import { check } from "@tauri-apps/plugin-updater";
 import Button from "../components/Button";
 import TextInput from "../components/TextInput";
 import StatusCard from "../components/StatusCard";
@@ -189,8 +189,14 @@ export default function SettingsPage() {
     }
   };
 
-  const handleCheckUpdate = () => {
-    setUpdateStatus("latest");
+  const handleCheckUpdate = async () => {
+    setUpdateStatus("checking");
+    try {
+      const update = await check();
+      setUpdateStatus(update ? "available" : "latest");
+    } catch {
+      setUpdateStatus("error");
+    }
   };
 
   const handleConfluenceTest = () => {
@@ -225,7 +231,7 @@ export default function SettingsPage() {
             <span style={styles.sectionHeader}>일반</span>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>앱 버전</span>
-              <span style={styles.infoValue}>v0.1.0</span>
+              <span style={styles.infoValue}>v1.0.0</span>
             </div>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>업데이트</span>
