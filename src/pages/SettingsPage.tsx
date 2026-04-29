@@ -231,7 +231,7 @@ export default function SettingsPage() {
             <span style={styles.sectionHeader}>일반</span>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>앱 버전</span>
-              <span style={styles.infoValue}>v1.0.0</span>
+              <span style={styles.infoValue}>v1.1.0</span>
             </div>
             <div style={styles.infoRow}>
               <span style={styles.infoLabel}>업데이트</span>
