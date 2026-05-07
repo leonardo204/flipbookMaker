@@ -1,18 +1,81 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { readTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, exists, remove } from "@tauri-apps/plugin-fs";
 import { useSettings } from "../contexts/SettingsContext";
 import { useWorkflow } from "../contexts/WorkflowContext";
 import Button from "../components/Button";
 import ProgressBar from "../components/ProgressBar";
 import StatusCard from "../components/StatusCard";
 import { generateMarkdown } from "../services/claudeService";
-import { extractFileKey, getFigmaNodeDetail } from "../services/figmaService";
+import {
+  extractFileKey,
+  getFigmaNodeDetail,
+  renderFigmaFramesToFiles,
+  type FigmaNode,
+} from "../services/figmaService";
 
 const FALLBACK_OUTPUT_DIR = "~/Documents/FlipbookMaker/output";
 
 type StageStatus = "idle" | "converting" | "done" | "error";
+
+/**
+ * Figma URL에 node-id 쿼리 파라미터를 안전하게 설정/교체.
+ * 기존 ?node-id=... 가 있어도 중복되지 않도록 URLSearchParams 사용.
+ * URL 파싱 실패 시 base URL의 쿼리 부분만 잘라내고 새 node-id로 재구성.
+ */
+function buildFigmaPageUrl(baseUrl: string, nodeId: string): string {
+  try {
+    const url = new URL(baseUrl);
+    url.searchParams.set("node-id", nodeId);
+    return url.toString();
+  } catch {
+    const [pathPart] = baseUrl.split("?");
+    return `${pathPart}?node-id=${encodeURIComponent(nodeId)}`;
+  }
+}
+
+/**
+ * 노드 트리에서 렌더링 대상 프레임을 수집해 시각 순서(상→하, 좌→우)로 정렬한 ID 목록 반환.
+ * - 직속 자식 중 FRAME/COMPONENT/INSTANCE 대상
+ * - SECTION/GROUP은 한 단계 더 들어가서 그 안의 FRAME 수집
+ * - 정렬 기준: bbox.y (행) → bbox.x (열). bbox 없으면 트리 순서 유지
+ *
+ * 시각 순서로 정렬해야 LLM이 "이미지를 이어 보면 하나의 흐름"으로 파악 가능.
+ */
+function collectFrameIds(node: FigmaNode): string[] {
+  const collected: FigmaNode[] = [];
+
+  function walk(n: FigmaNode, isRoot: boolean) {
+    if (!isRoot && (n.type === "FRAME" || n.type === "COMPONENT" || n.type === "INSTANCE")) {
+      if (n.id) collected.push(n);
+      return; // FRAME 내부의 더 깊은 FRAME은 별도 화면으로 보지 않음 (자식 컴포넌트는 한 화면 내부 요소)
+    }
+    if (n.type === "SECTION" || n.type === "GROUP" || n.type === "CANVAS" || isRoot) {
+      n.children?.forEach((c) => walk(c, false));
+    }
+  }
+
+  // 루트 자체가 FRAME이면 자기 자신을 우선 추가
+  if (node.type === "FRAME" || node.type === "COMPONENT" || node.type === "INSTANCE") {
+    if (node.id) collected.push(node);
+    node.children?.forEach((c) => walk(c, false));
+  } else {
+    walk(node, true);
+  }
+
+  // bbox 기반 시각 정렬 (행 → 열). 같은 행으로 묶기 위해 y를 100px 단위로 라운딩.
+  const ROW_GROUP = 100;
+  const sorted = [...collected].sort((a, b) => {
+    if (!a.bbox || !b.bbox) return 0;
+    const aRow = Math.floor(a.bbox.y / ROW_GROUP);
+    const bRow = Math.floor(b.bbox.y / ROW_GROUP);
+    if (aRow !== bRow) return aRow - bRow;
+    return a.bbox.x - b.bbox.x;
+  });
+
+  return sorted.map((n) => n.id);
+}
 
 const styles = {
   page: {
@@ -70,6 +133,46 @@ const styles = {
     justifyContent: "space-between",
     padding: "10px 16px",
   },
+  docRowOuter: {
+    display: "flex",
+    flexDirection: "column" as const,
+  },
+  errorPanel: {
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
+    borderTop: "1px solid var(--color-border)",
+    color: "var(--color-text)",
+    fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+    fontSize: "11px",
+    lineHeight: 1.5,
+    padding: "10px 16px",
+    whiteSpace: "pre-wrap" as const,
+    wordBreak: "break-word" as const,
+  },
+  rowActionBtn: {
+    backgroundColor: "transparent",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--color-text)",
+    cursor: "pointer",
+    fontSize: "11px",
+    fontWeight: 500,
+    padding: "3px 8px",
+    transition: "background 0.15s, border-color 0.15s",
+  },
+  rowActionBtnPrimary: {
+    backgroundColor: "var(--color-accent)",
+    border: "1px solid var(--color-accent)",
+    borderRadius: "var(--radius-sm)",
+    color: "white",
+    cursor: "pointer",
+    fontSize: "11px",
+    fontWeight: 500,
+    padding: "3px 10px",
+  },
+  rowActionBtnDisabled: {
+    opacity: 0.4,
+    cursor: "not-allowed",
+  },
   docName: {
     color: "var(--color-text)",
     fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
@@ -117,7 +220,7 @@ function stageLabelText(stage: StageStatus): string {
 export default function ConvertPage() {
   const navigate = useNavigate();
   const { settings } = useSettings();
-  const { workflow, setPhase, updatePageStatus } = useWorkflow();
+  const { workflow, setPhase, updatePageStatus, updatePageSubstatus } = useWorkflow();
 
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState<StageStatus>("idle");
@@ -127,6 +230,7 @@ export default function ConvertPage() {
   // 완료된 페이지 수 (Markdown 생성 완료 기준)
   const [doneCount, setDoneCount] = useState(0);
   const [pageErrors, setPageErrors] = useState<Record<string, string>>({});
+  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
 
   // 중복 실행 방지
   const started = useRef(false);
@@ -143,94 +247,229 @@ export default function ConvertPage() {
     if (started.current) return;
     started.current = true;
     stoppedRef.current = false;
-    startPipeline();
+
+    // 선택된 섹션이 없으면 자동 일괄 변환 시작 안 함 (사용자가 행별 [변환]으로 개별 시작)
+    const hasSelected = workflow.pages.some((p) => p.selected);
+    if (hasSelected) {
+      startPipeline();
+    } else {
+      console.log("[ConvertPage] 선택된 섹션 0개 — 일괄 변환 건너뜀, 개별 변환 대기");
+      setStage("idle");
+      setPhase("idle");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * 단일 섹션 변환 — 데이터 수집(메타+이미지) + Claude 호출 + 결과 반영.
+   * 일괄 변환과 단일 변환/재시도에서 공통으로 사용.
+   * @returns true = 성공, false = 실패 (호출자가 progress/state 갱신)
+   */
+  const processOnePage = async (page: typeof pages[number]): Promise<boolean> => {
+    const claudePath = settings.claudePath || "claude";
+    const isFigma = workflow.sourceType === "figma";
+    const fileKey = isFigma ? extractFileKey(workflow.url) : null;
+
+    updatePageStatus(page.name, "converting");
+    // 진입 시 이전 에러 메시지 정리
+    setPageErrors((prev) => {
+      if (!prev[page.name]) return prev;
+      const next = { ...prev };
+      delete next[page.name];
+      return next;
+    });
+
+    let textContent = "";
+    let pageUrl = workflow.url;
+    let imagePaths: string[] = [];
+
+    // 기존 .md 파일이 있으면 사전 삭제 — Claude가 "이미 있어 유지" 판단 차단
+    const targetMdPath = `${outputDir}/${page.slug}.md`;
+    try {
+      if (await exists(targetMdPath)) {
+        updatePageSubstatus(page.name, "기존 파일 정리");
+        await remove(targetMdPath);
+        console.log(`[ConvertPage] 기존 파일 삭제: ${targetMdPath}`);
+      }
+    } catch (e) {
+      console.warn(`[ConvertPage] 기존 파일 삭제 실패 (계속 진행):`, e);
+    }
+
+    if (isFigma && fileKey) {
+      // Step 1: 메타데이터(노드 트리)
+      let nodeDetail: FigmaNode | null = null;
+      try {
+        updatePageSubstatus(page.name, "노드 트리 수집");
+        nodeDetail = await getFigmaNodeDetail(fileKey, page.path, settings.figmaToken);
+        const frameCount = nodeDetail.children?.length ?? 0;
+        console.log(`[ConvertPage] Section "${page.name}": ${frameCount} frames`);
+        textContent = JSON.stringify(nodeDetail);
+        pageUrl = buildFigmaPageUrl(workflow.url, page.path);
+      } catch (e) {
+        console.error(`[ConvertPage] Meta fetch failed for "${page.name}":`, e);
+        textContent = `(Figma 노드 데이터 수집 실패: ${e})`;
+      }
+
+      // Step 2: 이미지 렌더 (best-effort)
+      if (nodeDetail) {
+        const frameIds = collectFrameIds(nodeDetail);
+        if (frameIds.length > 0) {
+          const imageDir = `${outputDir}/_figma_images/${page.slug}`;
+          try {
+            // scale=1 — Anthropic API 이미지 합산 한도(~20MB) 회피
+            const downloaded = await renderFigmaFramesToFiles(
+              fileKey,
+              frameIds,
+              settings.figmaToken,
+              imageDir,
+              1,
+              (ev) => {
+                if (ev.phase === "rendering") {
+                  updatePageSubstatus(page.name, `이미지 렌더 요청 (${frameIds.length}개)`);
+                } else {
+                  updatePageSubstatus(page.name, `이미지 다운로드 ${ev.current}/${ev.total}`);
+                }
+              },
+            );
+            imagePaths = Object.values(downloaded).filter((p): p is string => p !== null);
+            console.log(
+              `[ConvertPage] Section "${page.name}": ${imagePaths.length}/${frameIds.length} 이미지 다운로드 성공`,
+            );
+          } catch (e) {
+            console.warn(`[ConvertPage] 이미지 렌더 실패(메타는 유지) "${page.name}":`, e);
+          }
+        }
+      }
+    } else if (!isFigma) {
+      // Axshare 분기
+      const pageDataDir = page.sectionDir ? `${outputDir}/${page.sectionDir}` : outputDir;
+      try {
+        textContent = await readTextFile(`${pageDataDir}/${page.slug}.txt`);
+      } catch {
+        textContent = `(텍스트 파일 없음: ${page.slug}.txt)`;
+      }
+    }
+
+    updatePageSubstatus(
+      page.name,
+      imagePaths.length > 0
+        ? `Claude 분석 (이미지 ${imagePaths.length}개)`
+        : "Claude 분석 (메타만)",
+    );
+
+    const result = await generateMarkdown(
+      claudePath,
+      pageUrl,
+      page.slug,
+      page.name,
+      textContent,
+      outputDir,
+      workflow.sourceType,
+      workflow.documentName,
+      imagePaths,
+    );
+
+    if (result.success) {
+      updatePageStatus(page.name, "done");
+      return true;
+    } else {
+      updatePageStatus(page.name, "error");
+      setPageErrors((prev) => ({ ...prev, [page.name]: result.error || "알 수 없는 오류" }));
+      return false;
+    }
+  };
+
+  /**
+   * selected=true 인 섹션만 일괄 변환.
+   * (selected=false 항목은 목록에 표시되지만 개별 [변환] 버튼으로만 처리 가능)
+   */
   const startPipeline = async () => {
     setLocalError(null);
     setStopped(false);
     setStage("converting");
     setPhase("converting");
 
-    const claudePath = settings.claudePath || "claude";
-    const pageList = pages.length > 0 ? pages : [];
-    const perPageProgress = pageList.length > 0 ? 100 / pageList.length : 0;
+    const targetPages = pages.filter((p) => p.selected);
+    const perPageProgress = targetPages.length > 0 ? 100 / targetPages.length : 0;
     let completedCount = 0;
 
-    const isFigma = workflow.sourceType === "figma";
-    const fileKey = isFigma ? extractFileKey(workflow.url) : null;
+    if (targetPages.length === 0) {
+      setStage("idle");
+      setPhase("idle");
+      return;
+    }
 
-    for (let pi = 0; pi < pageList.length; pi++) {
-      const page = pageList[pi];
+    for (let pi = 0; pi < targetPages.length; pi++) {
+      const page = targetPages[pi];
       if (stoppedRef.current) break;
-      updatePageStatus(page.name, "converting");
-
-      // Figma rate limit 방지: 섹션 간 5초 딜레이 (첫 번째 제외)
-      if (isFigma && pi > 0) {
-        console.log(`[ConvertPage] Rate limit delay: 5s before "${page.name}"`);
-        await new Promise(r => setTimeout(r, 5000));
-      }
-
-      let textContent = "";
-      let pageUrl = workflow.url;
-
-      if (isFigma) {
-        try {
-          if (fileKey) {
-            console.log(`[ConvertPage] Fetching Figma section: "${page.name}" (${page.path})`);
-            const nodeDetail = await getFigmaNodeDetail(fileKey, page.path, settings.figmaToken);
-            const frameCount = nodeDetail.children?.length ?? 0;
-            console.log(`[ConvertPage] Section "${page.name}": ${frameCount} frames`);
-            textContent = JSON.stringify(nodeDetail, null, 2);
-            pageUrl = `${workflow.url}?node-id=${encodeURIComponent(page.path)}`;
-          }
-        } catch (e) {
-          console.error(`[ConvertPage] Figma data fetch failed for "${page.name}":`, e);
-          textContent = `(Figma 노드 데이터 수집 실패: ${e})`;
-        }
-      } else {
-        // Axshare: 크롤링 시 저장된 텍스트 파일 읽기
-        const pageDataDir = page.sectionDir ? `${outputDir}/${page.sectionDir}` : outputDir;
-        try {
-          textContent = await readTextFile(`${pageDataDir}/${page.slug}.txt`);
-        } catch {
-          textContent = `(텍스트 파일 없음: ${page.slug}.txt)`;
-        }
-      }
-
-      const result = await generateMarkdown(
-        claudePath,
-        pageUrl,
-        page.slug,
-        page.name,
-        textContent,
-        outputDir,
-        workflow.sourceType,
-      );
-
-      if (result.success) {
-        updatePageStatus(page.name, "done");
+      const ok = await processOnePage(page);
+      if (ok) {
         completedCount += 1;
         setDoneCount(completedCount);
-      } else {
-        updatePageStatus(page.name, "error");
-        setPageErrors((prev) => ({ ...prev, [page.name]: result.error || "알 수 없는 오류" }));
       }
-
-      setProgress(Math.round(perPageProgress * completedCount));
+      setProgress(Math.round(perPageProgress * (pi + 1)));
     }
 
     if (!stoppedRef.current) {
       setProgress(100);
-      setStage("done");
-      setPhase("done");
+      // 일괄 대상(selected) 중 부분 실패가 있으면 idle로 — 사용자가 행별 [재시도] 가능
+      const hasFailures = targetPages.some((p) => {
+        const cur = pages.find((x) => x.name === p.name);
+        return cur?.status === "error";
+      });
+      if (hasFailures) {
+        setStage("idle");
+        setPhase("idle");
+      } else {
+        setStage("done");
+        setPhase("done");
+      }
+    }
+  };
+
+  /**
+   * 단일 섹션만 변환 (개별 변환 / 재시도 버튼).
+   * 일괄 변환 도중에는 호출 차단 (singleRunningRef).
+   */
+  const singleRunningRef = useRef(false);
+
+  const convertSingle = async (page: typeof pages[number]) => {
+    if (singleRunningRef.current || stage === "converting") {
+      console.log("[ConvertPage] 다른 작업 진행 중 — 단일 변환 차단");
+      return;
+    }
+    singleRunningRef.current = true;
+    try {
+      const prevDoneSet = new Set(pages.filter((p) => p.status === "done").map((p) => p.name));
+      const wasDone = prevDoneSet.has(page.name);
+
+      await processOnePage(page);
+
+      // doneCount 재산출 — 단일 변환 결과를 반영해 진행률 갱신
+      const newDone = pages.reduce((acc, p) => {
+        if (p.name === page.name) {
+          // workflow 갱신은 비동기라 결과가 즉시 반영 안 될 수 있음 — 직접 비교
+          return acc;
+        }
+        return p.status === "done" ? acc + 1 : acc;
+      }, 0);
+      // 단일 변환 후 done 상태는 workflow.pages가 가지고 있으므로 직접 카운트
+      const refreshed = pages.find((p) => p.name === page.name);
+      const isDoneNow = refreshed?.status === "done";
+      const adjusted = newDone + (isDoneNow ? 1 : 0);
+      setDoneCount(adjusted);
+
+      if (!wasDone && adjusted === pages.length) {
+        setStage("done");
+        setProgress(100);
+        setPhase("done");
+      }
+    } finally {
+      singleRunningRef.current = false;
     }
   };
 
   const handleStop = () => {
-    // stoppedRef를 true로 설정하면 startPipeline 루프가 다음 페이지 처리를 시작하지 않는다.
-    // 현재 진행 중인 작업이 완료된 후 루프를 빠져나온다.
     stoppedRef.current = true;
     setStopped(true);
     setStage("error");
@@ -249,6 +488,8 @@ export default function ConvertPage() {
   };
 
   const totalPages = pages.length;
+  const selectedPages = pages.filter((p) => p.selected);
+  const selectedTotal = selectedPages.length;
   const displayDone = doneCount;
 
   return (
@@ -264,7 +505,8 @@ export default function ConvertPage() {
         {/* 완료 상태 */}
         {stage === "done" && (
           <StatusCard title="변환 완료" status="success">
-            총 {totalPages}개 문서가 성공적으로 변환되었습니다. Confluence에 업로드할 수 있습니다.
+            선택한 {selectedTotal}개 문서가 성공적으로 변환되었습니다. Confluence에 업로드할 수 있습니다.
+            {selectedTotal < totalPages && ` (선택 안 한 ${totalPages - selectedTotal}개는 목록에서 개별 변환 가능합니다.)`}
           </StatusCard>
         )}
 
@@ -286,61 +528,167 @@ export default function ConvertPage() {
         {totalPages > 0 && (
           <div style={styles.docList}>
             <div style={styles.docHeader}>
-              변환된 문서 ({displayDone}/{totalPages}개)
+              변환된 문서 ({displayDone}/{selectedTotal}개 선택됨, 전체 {totalPages}개)
             </div>
-            {pages.map((page, idx) => (
-              <div
-                key={page.name}
-                style={{
-                  ...styles.docItem,
-                  borderBottom:
-                    idx === pages.length - 1 ? "none" : "1px solid var(--color-border)",
-                }}
-              >
-                <span style={styles.docName}>{page.name}.md</span>
-                <div style={styles.statusGroup}>
-                  {page.status === "done" && (
-                    <>
-                      <span
-                        style={{ color: "var(--color-success)", fontSize: "12px", fontWeight: 500 }}
-                      >
-                        완료
-                      </span>
-                      <span
-                        style={styles.openLink}
-                        onClick={() =>
-                          invoke("open_path", { path: `${outputDir}/${page.slug}.md` }).catch((e) => alert(`파일 열기 실패: ${e}`))
-                        }
-                      >
-                        열기
-                      </span>
-                    </>
-                  )}
-                  {page.status === "converting" && (
-                    <span
-                      style={{ color: "var(--color-warning)", fontSize: "12px", fontWeight: 500 }}
-                    >
-                      변환 중...
-                    </span>
-                  )}
-                  {page.status === "error" && (
-                    <span
-                      style={{ color: "var(--color-error, #ef4444)", fontSize: "12px", fontWeight: 500, maxWidth: "300px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}
-                      title={pageErrors[page.name] || "오류"}
-                    >
-                      {pageErrors[page.name] ? `오류: ${pageErrors[page.name].slice(0, 50)}` : "오류"}
-                    </span>
-                  )}
-                  {page.status === "pending" && (
-                    <span
-                      style={{ color: "var(--color-text-tertiary)", fontSize: "12px" }}
-                    >
-                      대기
-                    </span>
+            {pages.map((page, idx) => {
+              const isLast = idx === pages.length - 1;
+              const isErrorExpanded = expandedErrors.has(page.name);
+              const busy = stage === "converting" || page.status === "converting";
+
+              const toggleError = () => {
+                setExpandedErrors((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(page.name)) next.delete(page.name);
+                  else next.add(page.name);
+                  return next;
+                });
+              };
+
+              const dim = !page.selected && page.status === "pending";
+              return (
+                <div
+                  key={page.name}
+                  style={{
+                    ...styles.docRowOuter,
+                    borderBottom: isLast ? "none" : "1px solid var(--color-border)",
+                    opacity: dim ? 0.55 : 1,
+                  }}
+                >
+                  <div style={styles.docItem}>
+                    <span style={styles.docName}>{page.name}.md</span>
+                    <div style={styles.statusGroup}>
+                      {page.status === "done" && (
+                        <>
+                          <span
+                            style={{ color: "var(--color-success)", fontSize: "12px", fontWeight: 500 }}
+                          >
+                            완료
+                          </span>
+                          <span
+                            style={styles.openLink}
+                            onClick={() =>
+                              invoke("open_path", { path: `${outputDir}/${page.slug}.md` })
+                                .catch((e) => alert(`파일 열기 실패: ${e}`))
+                            }
+                          >
+                            열기
+                          </span>
+                          <button
+                            style={{
+                              ...styles.rowActionBtn,
+                              ...(busy ? styles.rowActionBtnDisabled : {}),
+                            }}
+                            disabled={busy}
+                            onClick={() => convertSingle(page)}
+                            title="이 섹션을 다시 변환"
+                          >
+                            재변환
+                          </button>
+                        </>
+                      )}
+                      {page.status === "converting" && (
+                        <span
+                          style={{
+                            color: "var(--color-warning)",
+                            fontSize: "12px",
+                            fontWeight: 500,
+                            maxWidth: "320px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap" as const,
+                          }}
+                          title={page.substatus || "변환 중"}
+                        >
+                          {page.substatus ? `변환 중 — ${page.substatus}` : "변환 중..."}
+                        </span>
+                      )}
+                      {page.status === "error" && (
+                        <>
+                          <span
+                            style={{
+                              color: "var(--color-error, #ef4444)",
+                              fontSize: "12px",
+                              fontWeight: 500,
+                              maxWidth: "300px",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap" as const,
+                              cursor: "pointer",
+                              textDecoration: "underline dotted",
+                            }}
+                            title="클릭해서 상세 사유 펼치기/접기"
+                            onClick={toggleError}
+                          >
+                            {pageErrors[page.name]
+                              ? `오류: ${pageErrors[page.name].slice(0, 50)}${pageErrors[page.name].length > 50 ? "…" : ""}`
+                              : "오류"}
+                          </span>
+                          <button
+                            style={{
+                              ...styles.rowActionBtnPrimary,
+                              ...(busy ? styles.rowActionBtnDisabled : {}),
+                            }}
+                            disabled={busy}
+                            onClick={() => convertSingle(page)}
+                            title="이 섹션만 재시도"
+                          >
+                            재시도
+                          </button>
+                        </>
+                      )}
+                      {page.status === "pending" && page.selected && (
+                        <>
+                          <span
+                            style={{ color: "var(--color-text-tertiary)", fontSize: "12px" }}
+                          >
+                            대기
+                          </span>
+                          <button
+                            style={{
+                              ...styles.rowActionBtnPrimary,
+                              ...(busy ? styles.rowActionBtnDisabled : {}),
+                            }}
+                            disabled={busy}
+                            onClick={() => convertSingle(page)}
+                            title="이 섹션만 변환"
+                          >
+                            변환
+                          </button>
+                        </>
+                      )}
+                      {page.status === "pending" && !page.selected && (
+                        <>
+                          <span
+                            style={{
+                              color: "var(--color-text-tertiary)",
+                              fontSize: "12px",
+                              fontStyle: "italic",
+                            }}
+                            title="분석 단계에서 체크 해제됨 — 일괄 변환에서 제외"
+                          >
+                            선택 안 함
+                          </span>
+                          <button
+                            style={{
+                              ...styles.rowActionBtn,
+                              ...(busy ? styles.rowActionBtnDisabled : {}),
+                            }}
+                            disabled={busy}
+                            onClick={() => convertSingle(page)}
+                            title="이 섹션만 개별 변환"
+                          >
+                            변환
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {page.status === "error" && isErrorExpanded && pageErrors[page.name] && (
+                    <div style={styles.errorPanel}>{pageErrors[page.name]}</div>
                   )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -353,7 +701,7 @@ export default function ConvertPage() {
 
         {/* 액션 버튼 */}
         <div style={styles.actions}>
-          {stage !== "done" && stage !== "error" && !stopped && (
+          {stage === "converting" && !stopped && (
             <Button variant="danger" onClick={handleStop}>
               중지
             </Button>
@@ -366,6 +714,16 @@ export default function ConvertPage() {
               </Button>
               <Button onClick={handleRetry}>다시 시도</Button>
             </>
+          )}
+
+          {/* 일괄 변환 끝났는데 부분 실패가 있는 경우 (stage = idle) */}
+          {stage === "idle" && pages.some((p) => p.status === "error") && (
+            <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+              <Button variant="secondary" onClick={() => navigate("/")}>
+                처음으로
+              </Button>
+              <Button onClick={handleRetry}>실패 포함 전체 다시 변환</Button>
+            </div>
           )}
 
           {stage === "done" && (

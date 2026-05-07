@@ -5,6 +5,7 @@ export interface SitemapNode {
   pageName: string;
   type: string;
   url: string;
+  isEmpty?: boolean; // 변환할 콘텐츠가 거의 없는 섹션 (단일 이미지 등). 체크는 유지하되 UI에 표시
   children: SitemapNode[];
 }
 
@@ -24,12 +25,15 @@ export interface PageEntry {
   sectionDir: string; // 섹션 디렉토리명 (예: 1-scenario-architecture). 최상위 페이지는 빈 문자열
   path: string;
   status: PageStatus;
+  substatus?: string; // 변환 중 세부 단계 표시 (예: "이미지 다운로드 5/32")
+  selected: boolean;  // 일괄 변환 대상 여부 (AnalyzePage 체크박스 기준)
 }
 
 export interface WorkflowState {
   url: string;
   outputDir: string;
   sourceType: SourceType;
+  documentName: string; // 원본 문서명 (Figma 파일명 등) — 각 마크다운 상단에 표기
   sitemap: SitemapNode[];
   totalPages: number;
   pages: PageEntry[];
@@ -42,9 +46,11 @@ interface WorkflowContextValue {
   setUrl: (url: string) => void;
   setOutputDir: (dir: string) => void;
   setSourceType: (sourceType: SourceType) => void;
+  setDocumentName: (name: string) => void;
   setSitemap: (sitemap: SitemapNode[]) => void;
   setPages: (pages: PageEntry[]) => void;
   updatePageStatus: (name: string, status: PageStatus) => void;
+  updatePageSubstatus: (name: string, substatus: string | undefined) => void;
   setPhase: (phase: WorkflowPhase) => void;
   setError: (error: string | null) => void;
   reset: () => void;
@@ -54,6 +60,7 @@ const defaultState: WorkflowState = {
   url: "",
   outputDir: "",
   sourceType: "axshare",
+  documentName: "",
   sitemap: [],
   totalPages: 0,
   pages: [],
@@ -66,9 +73,11 @@ const WorkflowContext = createContext<WorkflowContextValue>({
   setUrl: () => {},
   setOutputDir: () => {},
   setSourceType: () => {},
+  setDocumentName: () => {},
   setSitemap: () => {},
   setPages: () => {},
   updatePageStatus: () => {},
+  updatePageSubstatus: () => {},
   setPhase: () => {},
   setError: () => {},
   reset: () => {},
@@ -89,6 +98,10 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     setWorkflow((prev) => ({ ...prev, sourceType }));
   }, []);
 
+  const setDocumentName = useCallback((documentName: string) => {
+    setWorkflow((prev) => ({ ...prev, documentName }));
+  }, []);
+
   const setSitemap = useCallback((sitemap: SitemapNode[]) => {
     setWorkflow((prev) => ({
       ...prev,
@@ -105,7 +118,16 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     setWorkflow((prev) => ({
       ...prev,
       pages: prev.pages.map((p) =>
-        p.name === name ? { ...p, status } : p
+        p.name === name ? { ...p, status, substatus: undefined } : p
+      ),
+    }));
+  }, []);
+
+  const updatePageSubstatus = useCallback((name: string, substatus: string | undefined) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) =>
+        p.name === name ? { ...p, substatus } : p
       ),
     }));
   }, []);
@@ -129,14 +151,16 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setUrl,
       setOutputDir,
       setSourceType,
+      setDocumentName,
       setSitemap,
       setPages,
       updatePageStatus,
+      updatePageSubstatus,
       setPhase,
       setError,
       reset,
     }),
-    [workflow, setUrl, setOutputDir, setSourceType, setSitemap, setPages, updatePageStatus, setPhase, setError, reset]
+    [workflow, setUrl, setOutputDir, setSourceType, setDocumentName, setSitemap, setPages, updatePageStatus, updatePageSubstatus, setPhase, setError, reset]
   );
 
   return (

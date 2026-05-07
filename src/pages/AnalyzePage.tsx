@@ -7,7 +7,7 @@ import StatusCard from "../components/StatusCard";
 import { useWorkflow, type SitemapNode, type PageEntry } from "../contexts/WorkflowContext";
 import { useSettings } from "../contexts/SettingsContext";
 import { runCrawl } from "../services/scriptRunner";
-import { getFigmaFileStructure, getFigmaNodeDetail, extractFileKey } from "../services/figmaService";
+import { getFigmaFileStructure, getFigmaFileMeta, getFigmaNodeDetail, extractFileKey, isEmptyFigmaSection, type FigmaNode } from "../services/figmaService";
 
 /**
  * scripts/lib/slug.mjs의 slugify 로직을 TypeScript로 포팅
@@ -38,14 +38,30 @@ function extractNodeId(url: string): string | null {
 
 
 /**
+ * SitemapNode 트리를 pageName 기준 자연 정렬 (00, 01, 02, ...).
+ * 최상위 + 모든 children에 재귀 적용.
+ */
+function sortSitemapAsc(nodes: SitemapNode[]): SitemapNode[] {
+  const sorted = [...nodes].sort((a, b) =>
+    a.pageName.localeCompare(b.pageName, undefined, { numeric: true, sensitivity: "base" }),
+  );
+  return sorted.map((n) => ({
+    ...n,
+    children: n.children && n.children.length > 0 ? sortSitemapAsc(n.children) : n.children,
+  }));
+}
+
+/**
  * Figma 노드 배열을 SitemapNode 트리로 변환.
  * SECTION/CANVAS → 카테고리(폴더), FRAME → 페이지(리프).
  * children이 있는 노드는 재귀적으로 처리.
+ * 각 노드에 대해 isEmptyFigmaSection으로 "내용 없음" 여부 계산.
  */
-function buildFigmaTree(nodes: Array<{ id: string; name: string; type: string; children?: Array<{ id: string; name: string; type: string; children?: unknown[] }> }>, baseUrl: string): SitemapNode[] {
+function buildFigmaTree(nodes: FigmaNode[], baseUrl: string): SitemapNode[] {
   return nodes.map(node => {
-    const hasChildren = node.children && node.children.length > 0;
+    const hasChildren = !!node.children && node.children.length > 0;
     const isContainer = node.type === "SECTION" || node.type === "CANVAS" || node.type === "GROUP";
+    const isEmpty = isEmptyFigmaSection(node);
 
     if (isContainer && hasChildren) {
       return {
@@ -53,11 +69,13 @@ function buildFigmaTree(nodes: Array<{ id: string; name: string; type: string; c
         pageName: node.name,
         type: node.type,
         url: baseUrl,
-        children: (node.children as Array<{ id: string; name: string; type: string; children?: Array<{ id: string; name: string; type: string }> }>).map(child => ({
+        isEmpty,
+        children: (node.children as FigmaNode[]).map(child => ({
           id: child.id,
           pageName: child.name,
           type: child.type,
           url: baseUrl,
+          isEmpty: isEmptyFigmaSection(child),
           children: [],
         })),
       };
@@ -68,6 +86,7 @@ function buildFigmaTree(nodes: Array<{ id: string; name: string; type: string; c
       pageName: node.name,
       type: node.type,
       url: baseUrl,
+      isEmpty,
       children: [],
     };
   });
@@ -161,6 +180,19 @@ const styles = {
     fontWeight: 500,
     padding: "2px 8px",
   },
+  emptyBadge: {
+    backgroundColor: "rgba(234, 179, 8, 0.12)",
+    borderRadius: "var(--radius-sm)",
+    color: "var(--color-warning)",
+    fontSize: "11px",
+    fontWeight: 500,
+    padding: "2px 8px",
+  },
+  badgeGroup: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+  },
   indent: (depth: number) => ({
     paddingLeft: `${16 + depth * 16}px`,
   }),
@@ -203,8 +235,18 @@ function SitemapTree({
               />
               {node.pageName}
             </span>
-            <span style={isSection ? styles.sectionBadge : styles.leafBadge}>
-              {isSection ? `${node.children.length}개 프레임` : "페이지"}
+            <span style={styles.badgeGroup}>
+              {node.isEmpty && (
+                <span
+                  style={styles.emptyBadge}
+                  title="텍스트 없음 + 단일 이미지 — 변환 시 콘텐츠 부족"
+                >
+                  내용 없음
+                </span>
+              )}
+              <span style={isSection ? styles.sectionBadge : styles.leafBadge}>
+                {isSection ? `${node.children.length}개 프레임` : "페이지"}
+              </span>
             </span>
           </div>
         );
@@ -216,7 +258,7 @@ function SitemapTree({
 export default function AnalyzePage() {
   const navigate = useNavigate();
   const { settings } = useSettings();
-  const { workflow, setSitemap, setPages, setPhase, setError: setWorkflowError } = useWorkflow();
+  const { workflow, setSitemap, setPages, setDocumentName, setPhase, setError: setWorkflowError } = useWorkflow();
 
   const [crawlProgress, setCrawlProgress] = useState({ current: 0, total: 0, page: "" });
   const [status, setStatus] = useState<"idle" | "crawling" | "done" | "error">("idle");
@@ -309,9 +351,10 @@ export default function AnalyzePage() {
 
         const raw = await readTextFile(resolvedSitemapPath);
         const parsed: SitemapNode[] = JSON.parse(raw);
-        setSitemap(parsed);
-        setSitemapData(parsed);
-        setCheckedIds(new Set(parsed.map((n) => n.id)));
+        const sorted = sortSitemapAsc(parsed);
+        setSitemap(sorted);
+        setSitemapData(sorted);
+        setCheckedIds(new Set(sorted.map((n) => n.id)));
       } else if (workflow.sourceType === "figma") {
         // Figma 경로: Figma API로 파일 구조 가져오기
         const fileKey = extractFileKey(workflow.url);
@@ -321,27 +364,37 @@ export default function AnalyzePage() {
 
         const nodeId = extractNodeId(workflow.url);
         let sitemapNodes: SitemapNode[];
+        let figmaFileName = "";
 
         if (nodeId) {
           console.log(`[AnalyzePage] Figma node-id: ${nodeId}, fetching node detail...`);
-          const nodeDetail = await getFigmaNodeDetail(fileKey, nodeId, settings.figmaToken);
+          const [nodeDetail, fileMeta] = await Promise.all([
+            getFigmaNodeDetail(fileKey, nodeId, settings.figmaToken),
+            getFigmaFileMeta(fileKey, settings.figmaToken),
+          ]);
           console.log(`[AnalyzePage] Node: "${nodeDetail.name}" (${nodeDetail.type}), children: ${nodeDetail.children?.length ?? 0}`);
+          console.log(`[AnalyzePage] File name: "${fileMeta.name}"`);
           sitemapNodes = buildFigmaTree(nodeDetail.children || [], workflow.url);
+          figmaFileName = fileMeta.name;
         } else {
           console.log(`[AnalyzePage] No node-id, fetching full file structure...`);
           const fileInfo = await getFigmaFileStructure(fileKey, settings.figmaToken);
           console.log(`[AnalyzePage] File: "${fileInfo.name}", pages: ${fileInfo.pages.length}`);
           sitemapNodes = buildFigmaTree(fileInfo.pages, workflow.url);
+          figmaFileName = fileInfo.name;
         }
 
-        console.log(`[AnalyzePage] Tree built: ${sitemapNodes.length} top-level sections`);
-        sitemapNodes.forEach(s => {
+        setDocumentName(figmaFileName);
+
+        const sortedNodes = sortSitemapAsc(sitemapNodes);
+        console.log(`[AnalyzePage] Tree built: ${sortedNodes.length} top-level sections (sorted asc)`);
+        sortedNodes.forEach(s => {
           console.log(`  [Section] ${s.pageName} (${s.type}) — ${s.children?.length ?? 0} frames`);
         });
 
-        setSitemap(sitemapNodes);
-        setSitemapData(sitemapNodes);
-        setCheckedIds(new Set(sitemapNodes.map((n) => n.id)));
+        setSitemap(sortedNodes);
+        setSitemapData(sortedNodes);
+        setCheckedIds(new Set(sortedNodes.map((n) => n.id)));
       } else {
         throw new Error(`지원하지 않는 소스 타입입니다: ${workflow.sourceType}`);
       }
@@ -366,15 +419,19 @@ export default function AnalyzePage() {
   const isAxshare = workflow.sourceType === "axshare";
 
   const handleStartConvert = () => {
-    // 선택된 섹션을 PageEntry로 변환 (섹션 1개 = Markdown 1개)
+    // 모든 섹션을 PageEntry로 변환 — 체크되지 않은 것도 ConvertPage 목록에 보이게
+    // 이름 기준 오름차순 정렬 (00, 01, 02, ... 순서로 처리/표시)
+    // selected 플래그로 일괄 변환 대상 여부만 구분 (체크 안 한 항목도 개별 [변환] 가능)
     const selectedSections: PageEntry[] = sitemapData
-      .filter((n) => checkedIds.has(n.id))
+      .slice()
+      .sort((a, b) => a.pageName.localeCompare(b.pageName, undefined, { numeric: true, sensitivity: "base" }))
       .map((n) => ({
         name: n.pageName,
         slug: slugify(n.pageName),
         sectionDir: "",
         path: n.id,
         status: "pending" as const,
+        selected: checkedIds.has(n.id),
       }));
     setSitemap(sitemapData);
     setPages(selectedSections);
