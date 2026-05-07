@@ -1,17 +1,21 @@
-import { Command } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 
 export type SessionStatus = "idle" | "connecting" | "connected" | "busy" | "error";
 type StatusListener = (status: SessionStatus) => void;
 
+interface ClaudePrintResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  elapsed_ms: number;
+}
+
 /**
  * Claude Code headless 세션 관리.
  *
- * 공식 문서 권장 패턴 사용:
- * - 첫 호출: `claude -p "prompt" --bare --output-format json --allowedTools "Read,Write,Bash" --dangerously-skip-permissions`
- * - 이후: `claude -p "prompt" --resume <session_id>` 로 컨텍스트 유지
- *
- * stream-json 상주 프로세스 대신, 매 호출마다 프로세스를 spawn하되 세션을 이어감.
- * --bare로 hooks/MCP 건너뛰어 빠른 시작.
+ * 호출은 Rust `claude_print` 명령에 위임 (stdin 기반 → argv overflow 회피).
+ * 첫 호출에서 session_id를 캡처하고, 이후 호출에 `--resume <id>`로 컨텍스트 유지.
  */
 class ClaudeSession {
   private status: SessionStatus = "idle";
@@ -38,16 +42,17 @@ class ClaudeSession {
     this.setStatus("connecting");
     this.claudePath = claudePath;
 
-    // 초기 핑으로 세션 ID 획득
     try {
-      const result = await this.runClaude("OK", false);
+      const result = await this.runClaude("OK", null);
       console.log("[claudeSession] init response:", result.text?.slice(0, 100));
       if (result.sessionId) {
         this.sessionId = result.sessionId;
         this.setStatus("connected");
         console.log("[claudeSession] connected, session:", this.sessionId);
       } else {
-        throw new Error("session_id를 받지 못함");
+        // session_id 없어도 connected로 간주 (--resume 없이 동작)
+        this.setStatus("connected");
+        console.warn("[claudeSession] connected without session_id (no resume)");
       }
     } catch (e) {
       this.setStatus("error");
@@ -55,81 +60,73 @@ class ClaudeSession {
     }
   }
 
-  async sendPrompt(prompt: string, _timeoutMs = 300000): Promise<string> {
+  async sendPrompt(prompt: string, timeoutMs = 300000): Promise<string> {
     if (this.status !== "connected") {
       throw new Error(`Claude 세션이 연결되지 않았습니다 (상태: ${this.status})`);
     }
     this.setStatus("busy");
     try {
-      const result = await this.runClaude(prompt, true);
+      // 섹션마다 새 세션으로 호출 — 컨텍스트/이미지 누적 방지.
+      // 누적되면 1M context 가까이 차서 image_error로 종료되는 사례 발생.
+      // 캐시 효율은 다소 손해지만 안정성 우선.
+      const result = await this.runClaude(prompt, null, timeoutMs);
       this.setStatus("connected");
       return result.text || "";
     } catch (e) {
-      this.setStatus("connected"); // 에러 후에도 세션은 유지
+      this.setStatus("connected");
       throw e;
     }
   }
 
-  private runClaude(prompt: string, _useResume: boolean): Promise<{ text: string; sessionId: string | null }> {
-    return new Promise((resolve, reject) => {
-      // Node에서 spawn(비동기)으로 claude 실행 — execFileSync 타임아웃 문제 회피
-      const nodeScript = `
-const { spawn, execSync } = require('child_process');
-const fs = require('fs');
+  private async runClaude(
+    prompt: string,
+    sessionId: string | null,
+    timeoutMs = 300000,
+  ): Promise<{ text: string; sessionId: string | null }> {
+    const promptBytes = prompt.length;
+    const timeoutSecs = Math.ceil(timeoutMs / 1000);
+    console.log(
+      `[claudeSession] runClaude: prompt=${promptBytes} bytes, timeout=${timeoutSecs}s, session=${sessionId ? "resume" : "new"}`,
+    );
 
-function findClaude() {
-  const candidates = [
-    ${JSON.stringify(this.claudePath)},
-    process.env.HOME + '/.local/bin/claude',
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
-    '/Applications/cmux.app/Contents/Resources/bin/claude',
-  ].filter(Boolean);
-  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch {} }
-  try { return execSync('which claude', { encoding: 'utf8' }).trim(); } catch {}
-  return 'claude';
-}
-
-const claudeCmd = findClaude();
-const child = spawn(claudeCmd, [
-  '-p', ${JSON.stringify(prompt)},
-  '--output-format', 'json',
-  '--dangerously-skip-permissions',
-  '--allowedTools', 'Read,Write,Bash',
-], { stdio: ['ignore', 'pipe', 'pipe'] });
-
-child.stdout.on('data', (d) => process.stdout.write(d));
-child.stderr.on('data', (d) => process.stderr.write(d));
-child.on('close', (code) => process.exit(code || 0));
-child.on('error', (e) => { process.stderr.write(e.message); process.exit(1); });
-`;
-
-      const cmd = Command.create("node", ["-e", nodeScript]);
-      let stdout = "";
-      let stderr = "";
-
-      cmd.stdout.on("data", (chunk: string) => { stdout += chunk; });
-      cmd.stderr.on("data", (chunk: string) => { stderr += chunk; });
-
-      cmd.on("close", (data: { code: number | null }) => {
-        if (data.code === 0 || data.code === null) {
-          try {
-            const json = JSON.parse(stdout.trim());
-            resolve({
-              text: json.result || "",
-              sessionId: json.session_id || null,
-            });
-          } catch {
-            resolve({ text: stdout.trim(), sessionId: null });
-          }
-        } else {
-          reject(new Error(stderr.trim() || `exit ${data.code}`));
-        }
-      });
-
-      cmd.on("error", (err: string) => reject(new Error(err)));
-      cmd.spawn().catch((e: unknown) => reject(new Error(String(e))));
+    const result = await invoke<ClaudePrintResult>("claude_print", {
+      request: {
+        prompt,
+        claude_path: this.claudePath || null,
+        session_id: sessionId || null,
+        timeout_secs: timeoutSecs,
+      },
     });
+
+    if (!result.success) {
+      console.error(
+        `[claudeSession] FAILED exit=${result.exit_code} elapsed=${result.elapsed_ms}ms`,
+      );
+      console.error(
+        `[claudeSession] stderr (${result.stderr.length} bytes):`,
+        result.stderr || "(empty)",
+      );
+      console.error(
+        `[claudeSession] stdout tail:`,
+        result.stdout.slice(-500) || "(empty)",
+      );
+
+      const detail =
+        result.stderr.trim() ||
+        result.stdout.trim().slice(-300) ||
+        `claude exit ${result.exit_code} (stdout/stderr 모두 비어있음, ${result.elapsed_ms}ms)`;
+      throw new Error(detail);
+    }
+
+    try {
+      const json = JSON.parse(result.stdout.trim());
+      return {
+        text: json.result || "",
+        sessionId: json.session_id || null,
+      };
+    } catch {
+      return { text: result.stdout.trim(), sessionId: null };
+    }
   }
 
   async stop(): Promise<void> {

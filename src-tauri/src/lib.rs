@@ -303,6 +303,161 @@ async fn confluence_upload_page(
     })
 }
 
+// ─── HTTP 다운로드 (Figma S3 PNG 등) ─────────────────────────────────────────
+
+#[tauri::command]
+async fn download_to_file(url: String, dest_path: String) -> Result<u64, String> {
+    let expanded = expand_tilde(&dest_path);
+
+    if let Some(parent) = std::path::Path::new(&expanded).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("디렉토리 생성 실패: {} ({})", e, parent.display()))?;
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("다운로드 요청 실패: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP {} 다운로드 실패", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("응답 읽기 실패: {}", e))?;
+
+    let len = bytes.len() as u64;
+    std::fs::write(&expanded, &bytes).map_err(|e| format!("파일 쓰기 실패: {} ({})", e, expanded))?;
+
+    Ok(len)
+}
+
+// ─── Claude Code CLI (stdin-based, argv overflow 회피) ───────────────────────
+
+#[derive(Deserialize)]
+struct ClaudePrintRequest {
+    prompt: String,
+    claude_path: Option<String>,
+    session_id: Option<String>,
+    timeout_secs: Option<u64>,
+    cwd: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ClaudePrintResult {
+    success: bool,
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    elapsed_ms: u64,
+}
+
+fn resolve_claude_path(custom: &Option<String>) -> String {
+    if let Some(p) = custom {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() {
+            let expanded = expand_tilde(trimmed);
+            if std::path::Path::new(&expanded).exists() {
+                return expanded;
+            }
+        }
+    }
+    for cand in default_candidates() {
+        if std::path::Path::new(&cand).exists() {
+            return cand;
+        }
+    }
+    "claude".to_string()
+}
+
+#[tauri::command]
+async fn claude_print(request: ClaudePrintRequest) -> Result<ClaudePrintResult, String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command as TokioCommand;
+
+    let claude_path = resolve_claude_path(&request.claude_path);
+    let timeout_secs = request.timeout_secs.unwrap_or(300);
+    let started = std::time::Instant::now();
+    let prompt_bytes = request.prompt.len();
+
+    eprintln!(
+        "[claude_print] path={} prompt_bytes={} timeout={}s session={:?}",
+        claude_path, prompt_bytes, timeout_secs, request.session_id
+    );
+
+    let mut cmd = TokioCommand::new(&claude_path);
+    cmd.arg("-p")
+        .arg("--output-format")
+        .arg("json")
+        .arg("--dangerously-skip-permissions")
+        .arg("--allowedTools")
+        .arg("Read,Write,Bash");
+
+    if let Some(sid) = request.session_id.as_ref().filter(|s| !s.is_empty()) {
+        cmd.arg("--resume").arg(sid);
+    }
+
+    if let Some(cwd) = request.cwd.as_ref().filter(|s| !s.is_empty()) {
+        cmd.current_dir(cwd);
+    }
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("claude spawn 실패: {} ({})", e, claude_path))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(request.prompt.as_bytes())
+            .await
+            .map_err(|e| format!("stdin write 실패: {}", e))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("stdin close 실패: {}", e))?;
+    } else {
+        return Err("claude stdin 핸들 획득 실패".to_string());
+    }
+
+    let output_fut = child.wait_with_output();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        output_fut,
+    )
+    .await
+    .map_err(|_| format!("claude 응답 timeout ({}s)", timeout_secs))?
+    .map_err(|e| format!("claude wait 실패: {}", e))?;
+
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    eprintln!(
+        "[claude_print] done success={} exit={:?} elapsed={}ms stdout_bytes={} stderr_bytes={}",
+        output.status.success(),
+        output.status.code(),
+        elapsed_ms,
+        stdout.len(),
+        stderr.len()
+    );
+
+    Ok(ClaudePrintResult {
+        success: output.status.success(),
+        stdout,
+        stderr,
+        exit_code: output.status.code(),
+        elapsed_ms,
+    })
+}
+
 #[tauri::command]
 async fn figma_api_proxy(endpoint: String, token: String) -> Result<String, String> {
     let url = format!("https://api.figma.com{}", endpoint);
@@ -449,7 +604,9 @@ pub fn run() {
             test_confluence_connection,
             confluence_upload_page,
             resolve_parent_page_id,
-            figma_api_proxy
+            figma_api_proxy,
+            claude_print,
+            download_to_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
