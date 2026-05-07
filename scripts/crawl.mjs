@@ -2,18 +2,57 @@ import { chromium } from 'playwright';
 import fs from 'fs/promises';
 import path from 'path';
 
-const BASE_URL = 'https://lsx333.axshare.com/?g=14&id=release_history';
-const OUTPUT = 'raw/sitemap.json';
+// CLI 인자 파싱 (외부 라이브러리 없이 process.argv 직접 파싱)
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const result = { url: null, output: './raw', help: false };
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--url' && args[i + 1]) {
+      result.url = args[++i];
+    } else if (args[i] === '--output' && args[i + 1]) {
+      result.output = args[++i];
+    } else if (args[i] === '--help' || args[i] === '-h') {
+      result.help = true;
+    }
+  }
+  return result;
+}
+
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+const opts = parseArgs(process.argv);
+
+if (opts.help) {
+  process.stderr.write('Usage: node crawl.mjs --url <axshareUrl> [--output <dir>]\n');
+  process.stderr.write('  --url <axshareUrl>   (required) Axure Share URL\n');
+  process.stderr.write('  --output <dir>       Output directory (default: ./raw)\n');
+  process.exit(0);
+}
+
+if (!opts.url) {
+  process.stderr.write('Error: --url is required\n');
+  process.stderr.write('Usage: node crawl.mjs --url <axshareUrl> [--output <dir>]\n');
+  process.exit(1);
+}
+
+const BASE_URL = opts.url;
+const OUTPUT_DIR = opts.output;
+const OUTPUT = path.join(OUTPUT_DIR, 'sitemap.json');
 
 async function main() {
+  emit({ event: 'start', type: 'crawl' });
+
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
-  console.log(`Navigating to ${BASE_URL}...`);
+  process.stderr.write(`Navigating to ${BASE_URL}...\n`);
   await page.goto(BASE_URL, { waitUntil: 'networkidle' });
 
-  console.log('Waiting for $axure.document.sitemap...');
+  process.stderr.write('Waiting for $axure.document.sitemap...\n');
   await page.waitForFunction(() => window.$axure?.document?.sitemap, { timeout: 30000 });
 
   const axureFields = await page.evaluate(() => {
@@ -27,7 +66,7 @@ async function main() {
       firstNodeKeys: doc.sitemap?.rootNodes?.[0] ? Object.keys(doc.sitemap.rootNodes[0]) : [],
     };
   });
-  console.log('$axure.document fields:', JSON.stringify(axureFields, null, 2));
+  process.stderr.write('$axure.document fields: ' + JSON.stringify(axureFields, null, 2) + '\n');
 
   const sitemap = await page.evaluate(() => {
     function serialize(node) {
@@ -42,16 +81,24 @@ async function main() {
     return window.$axure.document.sitemap.rootNodes.map(serialize);
   });
 
-  await fs.mkdir(path.dirname(OUTPUT), { recursive: true });
-  await fs.writeFile(OUTPUT, JSON.stringify(sitemap, null, 2));
-
   function countNodes(nodes) {
     return nodes.reduce((acc, n) => acc + 1 + countNodes(n.children || []), 0);
   }
-  console.log(`Sitemap saved to ${OUTPUT}`);
-  console.log(`Total nodes: ${countNodes(sitemap)}`);
+
+  const total = countNodes(sitemap);
+
+  // 진행률 이벤트: 크롤링은 단일 페이지이므로 완료 직전에 progress 1/1 emit
+  emit({ event: 'progress', current: 1, total: 1, page: BASE_URL });
+
+  await fs.mkdir(path.dirname(OUTPUT), { recursive: true });
+  await fs.writeFile(OUTPUT, JSON.stringify(sitemap, null, 2));
+
+  process.stderr.write(`Sitemap saved to ${OUTPUT}\n`);
+  process.stderr.write(`Total nodes: ${total}\n`);
 
   await browser.close();
+
+  emit({ event: 'done', type: 'crawl', sitemapPath: OUTPUT });
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((err) => { process.stderr.write(String(err) + '\n'); process.exit(1); });

@@ -20,17 +20,17 @@
 
 ### 개요
 
-**FlipbookMaker** — 플립북(Axure/Figma)을 Markdown 문서로 변환하고 Confluence에 업로드하는 데스크톱 앱
+**FlipbookMaker** — Figma/Axure 플립북을 텍스트+Mermaid Markdown으로 변환하고 Confluence에 업로드하는 데스크톱 앱
 
 | 항목 | 값 |
 |------|-----|
 | 기술 스택 | Tauri v2 + React + TypeScript |
-| LLM 연동 | Claude Code CLI pipe (`claude --print -p`) |
-| MCP 연동 | @modelcontextprotocol/sdk (TypeScript) |
+| LLM 연동 | Claude Code CLI 상주 세션 (`claude --print -p`) |
+| Figma 연동 | REST API (Personal Access Token, Rust 프록시) |
 | 빌드 방법 | `npm install && npm run tauri:build` |
 | 배포 | GitHub Releases + Tauri auto-update |
 | GitHub | git@github.com:leonardo204/flipbookMaker.git (SSH) |
-| 상태 | 개발 시작 |
+| 상태 | 개발 중 (v1.1) |
 
 ### 상세 문서
 
@@ -49,10 +49,10 @@
 - GitHub push는 SSH URL만 사용 (`git@github.com:`)
 - Claude Code 필수 전제: 미설치 시 변환 버튼 비활성화
 - Confluence 인증: OS 자격증명 관리자 사용 (macOS Keychain / Windows Credential Manager)
-- 초기 버전: Axure(axshare)만 지원, Figma/PDF는 이후 확장
-- `flipbook/` 디렉토리는 예제 산출물로 유지 (앱 데모/테스트용)
-- `scripts/`는 변환 엔진의 기반 코드 (TypeScript 모듈로 리팩토링 예정)
+- Figma/Axshare URL 자동 감지 — 이미지 캡처 없이 텍스트+Mermaid만 사용
+- Figma API rate limit: Pro 15req/min, 429 시 자동 재시도 + 90초 카운트다운
+- `scripts/crawl.mjs`만 유지 (capture 스크립트 삭제됨)
 
 ---
 
-*최종 업데이트: 2026-04-29*
+*최종 업데이트: 2026-05-07*
