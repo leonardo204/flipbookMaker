@@ -1,7 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useSettings } from "../contexts/SettingsContext";
+import { useWorkflow } from "../contexts/WorkflowContext";
+import { checkNodeAvailable } from "../services/scriptRunner";
 import Button from "../components/Button";
 import TextInput from "../components/TextInput";
+import StatusCard from "../components/StatusCard";
 
 const styles = {
   page: {
@@ -66,38 +70,6 @@ const styles = {
     fontSize: "13px",
     fontWeight: 600,
   },
-  dropZone: {
-    alignItems: "center",
-    border: "1px dashed var(--color-border)",
-    borderRadius: "var(--radius-sm)",
-    color: "var(--color-text-tertiary)",
-    cursor: "pointer",
-    display: "flex",
-    flexDirection: "column" as const,
-    fontSize: "13px",
-    gap: "6px",
-    justifyContent: "center",
-    minHeight: "100px",
-    padding: "20px",
-    textAlign: "center" as const,
-    transition: "border-color var(--transition), color var(--transition)",
-  },
-  dropIcon: {
-    fontSize: "24px",
-    color: "var(--color-text-tertiary)",
-  },
-  divider: {
-    alignItems: "center",
-    color: "var(--color-text-tertiary)",
-    display: "flex",
-    fontSize: "11px",
-    gap: "12px",
-  },
-  dividerLine: {
-    backgroundColor: "var(--color-border-subtle)",
-    flex: 1,
-    height: "1px",
-  },
   actions: {
     display: "flex",
     justifyContent: "flex-end",
@@ -106,12 +78,56 @@ const styles = {
 
 export default function InputPage() {
   const navigate = useNavigate();
+  const { settings } = useSettings();
+  const { setUrl: setWorkflowUrl, setOutputDir, setSourceType } = useWorkflow();
   const [url, setUrl] = useState("");
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [nodeAvailable, setNodeAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    checkNodeAvailable()
+      .then((result) => setNodeAvailable(result.available))
+      .catch(() => setNodeAvailable(false));
+  }, []);
 
   const handleAnalyze = () => {
-    if (url.trim()) {
-      navigate("/analyze");
+    if (!url.trim()) return;
+
+    if (!settings.outputPath) {
+      setValidationError("결과 폴더를 먼저 설정해주세요.");
+      setTimeout(() => navigate("/settings"), 1500);
+      return;
     }
+
+    if (!settings.claudeVerified) {
+      setValidationError("Claude Code 연결을 먼저 확인해주세요.");
+      setTimeout(() => navigate("/settings"), 1500);
+      return;
+    }
+
+    // URL 패턴 검증: figma.com 또는 axshare.com 포함 여부 확인
+    const trimmedUrl = url.trim();
+    if (trimmedUrl.includes("figma.com")) {
+      if (!settings.figmaToken) {
+        setValidationError("Figma Personal Access Token이 없습니다. 설정 페이지에서 먼저 등록해주세요.");
+        setTimeout(() => navigate("/settings"), 1500);
+        return;
+      }
+      setSourceType("figma");
+    } else if (trimmedUrl.includes("axshare.com")) {
+      setSourceType("axshare");
+    } else {
+      setValidationError("Figma 또는 Axure Share URL을 입력해주세요.");
+      return;
+    }
+
+    setValidationError(null);
+
+    // WorkflowContext에 URL과 출력 디렉토리 저장
+    setWorkflowUrl(trimmedUrl);
+    setOutputDir(settings.outputPath);
+
+    navigate("/analyze");
   };
 
   return (
@@ -137,7 +153,7 @@ export default function InputPage() {
         <div style={styles.header}>
           <h1 style={styles.title}>FlipbookMaker</h1>
           <p style={styles.subtitle}>
-            Axure 플립북을 Markdown 문서로 변환하고 Confluence에 업로드합니다
+            Figma 또는 Axure 플립북을 Markdown 문서로 변환하고 Confluence에 업로드합니다
           </p>
         </div>
 
@@ -146,42 +162,25 @@ export default function InputPage() {
           <TextInput
             value={url}
             onChange={setUrl}
-            placeholder="https://axshare.com/..."
-            label="Axure Share URL"
+            placeholder="https://figma.com/... 또는 https://axshare.com/..."
+            label="플립북 URL"
+            onEnter={handleAnalyze}
           />
 
-          <div style={styles.divider}>
-            <div style={styles.dividerLine} />
-            <span>또는</span>
-            <div style={styles.dividerLine} />
-          </div>
+          {nodeAvailable === false && (
+            <StatusCard title="Node.js 필요" status="error">
+              Markdown 변환에 Node.js가 필요합니다. nodejs.org에서 설치 후 앱을 재시작하세요.
+            </StatusCard>
+          )}
 
-          <div
-            style={styles.dropZone}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.currentTarget.style.borderColor = "var(--color-accent)";
-              e.currentTarget.style.color = "var(--color-text-secondary)";
-            }}
-            onDragLeave={(e) => {
-              e.currentTarget.style.borderColor = "var(--color-border)";
-              e.currentTarget.style.color = "var(--color-text-tertiary)";
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.currentTarget.style.borderColor = "var(--color-border)";
-              e.currentTarget.style.color = "var(--color-text-tertiary)";
-            }}
-          >
-            <span style={styles.dropIcon}>+</span>
-            <span>파일을 여기에 드래그하거나 클릭하여 선택</span>
-            <span style={{ fontSize: "11px" }}>
-              .html, .zip 파일 지원 (Phase 2에서 구현 예정)
-            </span>
-          </div>
+          {validationError && (
+            <StatusCard title="설정 필요" status="warning">
+              {validationError}
+            </StatusCard>
+          )}
 
           <div style={styles.actions}>
-            <Button onClick={handleAnalyze} disabled={!url.trim()}>
+            <Button onClick={handleAnalyze} disabled={!url.trim() || nodeAvailable === false}>
               분석 시작
             </Button>
           </div>
