@@ -6,6 +6,7 @@ interface TextInputProps {
   placeholder?: string;
   label?: string;
   type?: string;
+  onEnter?: () => void;
 }
 
 export default function TextInput({
@@ -14,6 +15,7 @@ export default function TextInput({
   placeholder,
   label,
   type = "text",
+  onEnter,
 }: TextInputProps) {
   const containerStyle: React.CSSProperties = {
     display: "flex",
@@ -51,6 +53,9 @@ export default function TextInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         style={inputStyle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && onEnter) onEnter();
+        }}
         onFocus={(e) => {
           e.currentTarget.style.borderColor = "var(--color-accent)";
           e.currentTarget.style.boxShadow = "0 0 0 2px var(--color-accent-subtle)";

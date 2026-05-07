@@ -4,9 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
+import { open } from "@tauri-apps/plugin-dialog";
+import { useSettings } from "../contexts/SettingsContext";
 import Button from "../components/Button";
 import TextInput from "../components/TextInput";
 import StatusCard from "../components/StatusCard";
+import { claudeSession } from "../services/claudeSession";
+import { verifyFigmaToken } from "../services/figmaService";
 
 interface ClaudeTestResult {
   success: boolean;
@@ -142,16 +146,29 @@ function getUpdateStatusColor(status: UpdateStatus): string {
   }
 }
 
-export default function SettingsPage() {
-  const navigate = useNavigate();
+interface SettingsPageProps {
+  /** App.tsx에서 Claude 연결 성공 후 세션 재시작을 트리거하는 콜백 */
+  onClaudeConnected?: () => void;
+}
 
-  // Claude Code
-  const [claudePath, setClaudePath] = useState("");
-  const [claudeConnected, setClaudeConnected] = useState<boolean | null>(null);
+export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = {}) {
+  const navigate = useNavigate();
+  const { settings, updateSettings } = useSettings();
+
+  // Claude Code (로컬 UI 상태)
+  const [claudePathLocal, setClaudePathLocal] = useState(settings.claudePath);
+  const [claudeConnected, setClaudeConnected] = useState<boolean | null>(
+    settings.claudeVerified ? true : null
+  );
   const [claudeVersion, setClaudeVersion] = useState<string | null>(null);
   const [claudeMessage, setClaudeMessage] = useState<string>("");
-  const [claudeDetectedPath, setClaudeDetectedPath] = useState<string | null>(null);
+  const [claudeDetectedPath, setClaudeDetectedPath] = useState<string | null>(
+    settings.claudePath || null
+  );
   const [claudeTesting, setClaudeTesting] = useState(false);
+
+  // Figma
+  const [figmaVerifying, setFigmaVerifying] = useState(false);
 
   // Update
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
@@ -163,30 +180,57 @@ export default function SettingsPage() {
     getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
   }, []);
 
-  // Confluence
-  const [atlassianUrl, setAtlassianUrl] = useState("");
-  const [confluenceEmail, setConfluenceEmail] = useState("");
+  // Confluence (SettingsContext 기반 + OS Keychain for token)
+  const [atlassianUrl, setAtlassianUrl] = useState(settings.atlassianUrl);
+  const [confluenceEmail, setConfluenceEmail] = useState(settings.confluenceEmail);
   const [confluenceToken, setConfluenceToken] = useState("");
-  const [spaceKey, setSpaceKey] = useState("");
-  const [parentPageUrl, setParentPageUrl] = useState("");
-  const [confluenceConnected, setConfluenceConnected] = useState<boolean | null>(null);
+  const [spaceKey, setSpaceKey] = useState(settings.spaceKey);
+  const [parentPageUrl, setParentPageUrl] = useState(settings.parentPageUrl);
+  const [confluenceConnected, setConfluenceConnected] = useState<boolean | null>(
+    settings.confluenceVerified ? true : null
+  );
+  const [confluenceTesting, setConfluenceTesting] = useState(false);
+  const [confluenceMessage, setConfluenceMessage] = useState("");
 
-  // Output
-  const [outputPath, setOutputPath] = useState("");
+  useEffect(() => {
+    // 페이지 진입 시 Keychain에서 API 토큰 로드
+    invoke<string | null>("load_credential", {
+      service: "flipbookmaker",
+      key: "confluence-token",
+    })
+      .then((token) => {
+        if (token) setConfluenceToken(token);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleClaudeTest = async () => {
     setClaudeTesting(true);
     try {
       const result = await invoke<ClaudeTestResult>("test_claude_code", {
-        customPath: claudePath.trim() || null,
+        customPath: claudePathLocal.trim() || null,
       });
       setClaudeConnected(result.success);
       setClaudeMessage(result.message);
-      if (result.path) {
-        setClaudeDetectedPath(result.path);
-        if (!claudePath.trim()) {
-          setClaudePath(result.path);
+      if (result.success) {
+        const resolvedPath = result.path || claudePathLocal;
+        updateSettings({ claudeVerified: true, claudePath: resolvedPath });
+        if (result.path) {
+          setClaudeDetectedPath(result.path);
+          if (!claudePathLocal.trim()) {
+            setClaudePathLocal(result.path);
+          }
         }
+        // 상주 세션 시작 (아직 연결되지 않은 경우)
+        if (!claudeSession.isConnected()) {
+          claudeSession.start(resolvedPath).catch(() => {
+            // 세션 시작 실패 시 무시 (fallback 사용)
+          });
+        }
+        // App.tsx의 claudeReady 상태 갱신 콜백 호출
+        onClaudeConnected?.();
+      } else {
+        updateSettings({ claudeVerified: false });
       }
       if (result.version) {
         setClaudeVersion(result.version);
@@ -197,8 +241,19 @@ export default function SettingsPage() {
       setClaudeConnected(false);
       setClaudeVersion(null);
       setClaudeMessage("명령 실행 중 오류가 발생했습니다.");
+      updateSettings({ claudeVerified: false });
     } finally {
       setClaudeTesting(false);
+    }
+  };
+
+  const handleSelectFolder = async () => {
+    const selected = await open({
+      directory: true,
+      title: "결과 폴더 선택",
+    });
+    if (selected) {
+      updateSettings({ outputPath: selected as string });
     }
   };
 
@@ -242,9 +297,56 @@ export default function SettingsPage() {
     }
   };
 
-  const handleConfluenceTest = () => {
-    // Phase 2+에서 실제 연결 테스트 구현
-    setConfluenceConnected(false);
+  const handleFigmaVerify = async () => {
+    if (!settings.figmaToken) return;
+    setFigmaVerifying(true);
+    try {
+      const valid = await verifyFigmaToken(settings.figmaToken);
+      updateSettings({ figmaVerified: valid });
+      if (!valid) {
+        alert("Figma 토큰이 유효하지 않습니다. 토큰을 확인해주세요.");
+      }
+    } catch {
+      updateSettings({ figmaVerified: false });
+      alert("Figma 연결 확인 실패");
+    } finally {
+      setFigmaVerifying(false);
+    }
+  };
+
+  const handleConfluenceTest = async () => {
+    setConfluenceTesting(true);
+    setConfluenceMessage("");
+    try {
+      await invoke<string>("test_confluence_connection", {
+        url: atlassianUrl.trim(),
+        email: confluenceEmail.trim(),
+        token: confluenceToken,
+        spaceKey: spaceKey.trim(),
+      });
+      setConfluenceConnected(true);
+      setConfluenceMessage("Confluence에 성공적으로 연결되었습니다.");
+      updateSettings({
+        atlassianUrl: atlassianUrl.trim(),
+        confluenceEmail: confluenceEmail.trim(),
+        spaceKey: spaceKey.trim(),
+        parentPageUrl: parentPageUrl.trim(),
+        confluenceVerified: true,
+      });
+      await invoke("save_credential", {
+        service: "flipbookmaker",
+        key: "confluence-token",
+        value: confluenceToken,
+      });
+    } catch (e) {
+      setConfluenceConnected(false);
+      setConfluenceMessage(
+        typeof e === "string" ? e : "연결 실패. 설정을 확인하세요."
+      );
+      updateSettings({ confluenceVerified: false });
+    } finally {
+      setConfluenceTesting(false);
+    }
   };
 
   return (
@@ -313,14 +415,28 @@ export default function SettingsPage() {
                 </div>
               </div>
             )}
+            <div style={styles.infoRow}>
+              <span style={styles.infoLabel}>자동 업데이트</span>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={settings.autoUpdate}
+                  onChange={(e) => updateSettings({ autoUpdate: e.target.checked })}
+                  style={{ width: "16px", height: "16px", accentColor: "var(--color-accent)" }}
+                />
+                <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
+                  앱 시작 시 및 24시간마다 확인
+                </span>
+              </label>
+            </div>
           </div>
 
           {/* Claude Code */}
           <div style={styles.section}>
             <span style={styles.sectionHeader}>Claude Code</span>
             <TextInput
-              value={claudePath}
-              onChange={setClaudePath}
+              value={claudePathLocal}
+              onChange={setClaudePathLocal}
               placeholder="/usr/local/bin/claude (자동 감지)"
               label="claude 경로"
             />
@@ -387,6 +503,40 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Figma 설정 */}
+          <div style={styles.section}>
+            <span style={styles.sectionHeader}>Figma 연결</span>
+            <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
+              Figma Personal Access Token을 입력하세요.
+              Figma → Settings → Personal access tokens에서 생성할 수 있습니다.
+            </span>
+            <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
+              <div style={{ flex: 1 }}>
+                <TextInput
+                  value={settings.figmaToken ?? ""}
+                  onChange={(v) => {
+                    updateSettings({ figmaToken: v, figmaVerified: false });
+                  }}
+                  placeholder="figd_..."
+                  label="Figma API Token"
+                  type="password"
+                />
+              </div>
+              <Button
+                variant="secondary"
+                onClick={handleFigmaVerify}
+                disabled={!settings.figmaToken || figmaVerifying}
+              >
+                {figmaVerifying ? "확인 중..." : "연결 확인"}
+              </Button>
+            </div>
+            {settings.figmaVerified && (
+              <StatusCard title="연결됨" status="success">
+                Figma API 연결이 확인되었습니다.
+              </StatusCard>
+            )}
+          </div>
+
           {/* Confluence */}
           <div style={styles.section}>
             <span style={styles.sectionHeader}>Confluence</span>
@@ -426,9 +576,10 @@ export default function SettingsPage() {
                 title="연결 상태"
                 status={confluenceConnected ? "success" : "error"}
               >
-                {confluenceConnected
-                  ? "Confluence에 연결되었습니다."
-                  : "Confluence에 연결할 수 없습니다. 설정을 확인하세요."}
+                {confluenceMessage ||
+                  (confluenceConnected
+                    ? "Confluence에 연결되었습니다."
+                    : "Confluence에 연결할 수 없습니다. 설정을 확인하세요.")}
               </StatusCard>
             )}
             {confluenceConnected !== null && (
@@ -443,8 +594,12 @@ export default function SettingsPage() {
               </div>
             )}
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <Button variant="secondary" onClick={handleConfluenceTest}>
-                연결 테스트
+              <Button
+                variant="secondary"
+                onClick={handleConfluenceTest}
+                disabled={confluenceTesting}
+              >
+                {confluenceTesting ? "테스트 중..." : "연결 테스트"}
               </Button>
             </div>
           </div>
@@ -454,12 +609,12 @@ export default function SettingsPage() {
             <span style={styles.sectionHeader}>출력</span>
             <div style={styles.row}>
               <TextInput
-                value={outputPath}
-                onChange={setOutputPath}
+                value={settings.outputPath}
+                onChange={(v) => updateSettings({ outputPath: v })}
                 placeholder="~/Documents/FlipbookMaker"
                 label="기본 저장 경로"
               />
-              <Button variant="secondary" onClick={() => {}}>
+              <Button variant="secondary" onClick={handleSelectFolder}>
                 폴더 선택
               </Button>
             </div>
