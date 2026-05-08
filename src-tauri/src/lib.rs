@@ -141,19 +141,31 @@ fn delete_credential(service: String, key: String) -> Result<(), String> {
     }
 }
 
+/// Confluence base URL을 정규화한다.
+/// 사용자가 `/wiki`를 포함했든 안 했든 결과는 항상 `https://xxx.atlassian.net/wiki`.
+/// 이후 endpoint는 `${base}/rest/api/...` 형태로만 호출 — `/wiki` 중복 방지.
+fn normalize_confluence_base(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/wiki") {
+        trimmed.to_string()
+    } else {
+        format!("{}/wiki", trimmed)
+    }
+}
+
 #[tauri::command]
 async fn test_confluence_connection(
     url: String,
     email: String,
     token: String,
-    space_key: String,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let api_url = format!(
-        "{}/wiki/rest/api/space/{}",
-        url.trim_end_matches('/'),
-        space_key
-    );
+    let base = normalize_confluence_base(&url);
+    // Space Key는 업로드 시 부모 페이지 URL에서 자동 추출하므로, 여기선 인증/URL만 검증.
+    // /rest/api/user/current → 토큰이 유효한 사용자의 정보 반환 (인증 검증용 표준 endpoint)
+    let api_url = format!("{}/rest/api/user/current", base);
+    eprintln!("[test_confluence_connection] GET {}", api_url);
+
     let response = client
         .get(&api_url)
         .basic_auth(&email, Some(&token))
@@ -165,9 +177,12 @@ async fn test_confluence_connection(
     if response.status().is_success() {
         Ok("연결 성공".to_string())
     } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        let snippet = text.chars().take(200).collect::<String>();
         Err(format!(
-            "HTTP {}: 인증 또는 Space Key를 확인하세요",
-            response.status()
+            "HTTP {}: 인증 또는 URL 확인 필요. 응답: {}",
+            status, snippet
         ))
     }
 }
@@ -199,11 +214,17 @@ async fn confluence_upload_page(
     request: ConfluenceUploadRequest,
 ) -> Result<ConfluenceUploadResult, String> {
     let client = reqwest::Client::new();
+    let base = normalize_confluence_base(&request.base_url);
 
     // 1. 페이지 생성
-    let create_url = format!(
-        "{}/wiki/rest/api/content",
-        request.base_url.trim_end_matches('/')
+    let create_url = format!("{}/rest/api/content", base);
+    eprintln!(
+        "[confluence_upload_page] POST {} space={} title={} parent={:?} images={}",
+        create_url,
+        request.space_key,
+        request.title,
+        request.parent_page_id,
+        request.image_paths.len()
     );
 
     let ancestors: Vec<serde_json::Value> = request
@@ -230,35 +251,161 @@ async fn confluence_upload_page(
         .post(&create_url)
         .basic_auth(&request.email, Some(&request.token))
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("페이지 생성 요청 실패: {}", e))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
+        let snippet = text.chars().take(400).collect::<String>();
+        eprintln!(
+            "[confluence_upload_page] FAILED status={} body={}",
+            status, snippet
+        );
         return Ok(ConfluenceUploadResult {
             success: false,
             page_id: None,
             page_url: None,
-            message: format!("페이지 생성 실패 HTTP {}: {}", status, text),
+            message: format!("페이지 생성 실패 HTTP {}: {}", status, snippet),
         });
     }
 
-    let page_data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let page_data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("페이지 생성 응답 파싱 실패: {}", e))?;
     let page_id = page_data["id"].as_str().unwrap_or("").to_string();
-    let page_url = format!(
-        "{}/wiki/spaces/{}/pages/{}",
-        request.base_url.trim_end_matches('/'),
-        request.space_key,
-        page_id
-    );
+    let page_url = format!("{}/spaces/{}/pages/{}", base, request.space_key, page_id);
+    eprintln!("[confluence_upload_page] page created id={} url={}", page_id, page_url);
 
-    // 2. 이미지 첨부
+    // 1-1. ancestors 검증 + 자동 이동
+    // Confluence Cloud는 같은 space에 같은 제목의 페이지가 있으면 ancestors 지정을 무시하고
+    // 다른 위치로 페이지를 만들 수 있음. 의도한 부모와 실제 부모가 다르면 PUT으로 정정.
+    let mut move_note = String::new();
+    if let Some(expected_parent) = request
+        .parent_page_id
+        .as_ref()
+        .filter(|id| !id.is_empty())
+        .cloned()
+    {
+        let check_url = format!(
+            "{}/rest/api/content/{}?expand=ancestors,version,space",
+            base, page_id
+        );
+        match client
+            .get(&check_url)
+            .basic_auth(&request.email, Some(&request.token))
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(check_resp) if check_resp.status().is_success() => {
+                if let Ok(check_data) = check_resp.json::<serde_json::Value>().await {
+                    let actual_parent = check_data["ancestors"]
+                        .as_array()
+                        .and_then(|a| a.last())
+                        .and_then(|p| p["id"].as_str())
+                        .unwrap_or("");
+
+                    if actual_parent != expected_parent {
+                        eprintln!(
+                            "[confluence_upload_page] 부모 불일치 감지: expected={} actual={} → 자동 이동 시도",
+                            expected_parent, actual_parent
+                        );
+                        let version_num = check_data["version"]["number"]
+                            .as_i64()
+                            .unwrap_or(1);
+                        let title_actual = check_data["title"]
+                            .as_str()
+                            .unwrap_or(&request.title)
+                            .to_string();
+                        let space_key_actual = check_data["space"]["key"]
+                            .as_str()
+                            .unwrap_or(&request.space_key)
+                            .to_string();
+
+                        let move_body = serde_json::json!({
+                            "id": page_id,
+                            "type": "page",
+                            "title": title_actual,
+                            "space": { "key": space_key_actual },
+                            "version": { "number": version_num + 1 },
+                            "ancestors": [{ "id": expected_parent }],
+                            "body": {
+                                "storage": {
+                                    "value": request.content,
+                                    "representation": "storage"
+                                }
+                            }
+                        });
+
+                        let move_url = format!("{}/rest/api/content/{}", base, page_id);
+                        match client
+                            .put(&move_url)
+                            .basic_auth(&request.email, Some(&request.token))
+                            .header("Content-Type", "application/json")
+                            .header("Accept", "application/json")
+                            .json(&move_body)
+                            .send()
+                            .await
+                        {
+                            Ok(mv) if mv.status().is_success() => {
+                                eprintln!(
+                                    "[confluence_upload_page] 자동 이동 성공 → 부모 {}",
+                                    expected_parent
+                                );
+                                move_note = format!(
+                                    " (부모 {}로 자동 이동됨 — 원래 부모: {})",
+                                    expected_parent, actual_parent
+                                );
+                            }
+                            Ok(mv) => {
+                                let s = mv.status();
+                                let body = mv.text().await.unwrap_or_default();
+                                let snip = body.chars().take(150).collect::<String>();
+                                eprintln!(
+                                    "[confluence_upload_page] 자동 이동 실패 HTTP {}: {}",
+                                    s, snip
+                                );
+                                move_note = format!(
+                                    " (⚠️ 부모가 {} 이지만 의도한 {} 으로 이동 실패: HTTP {})",
+                                    actual_parent, expected_parent, s
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("[confluence_upload_page] 자동 이동 요청 실패: {}", e);
+                                move_note = format!(
+                                    " (⚠️ 부모 {} 이지만 이동 실패: {})",
+                                    actual_parent, e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(check_resp) => {
+                eprintln!(
+                    "[confluence_upload_page] ancestors 검증 GET 실패 status={}",
+                    check_resp.status()
+                );
+            }
+            Err(e) => {
+                eprintln!("[confluence_upload_page] ancestors 검증 요청 실패: {}", e);
+            }
+        }
+    }
+
+    // 2. 이미지 첨부 — 실패도 수집해서 메시지에 포함
+    let mut attach_failures: Vec<String> = Vec::new();
+    let mut attach_success = 0usize;
+
     for image_path in &request.image_paths {
         let path = std::path::Path::new(image_path);
         if !path.exists() {
+            attach_failures.push(format!("(파일 없음) {}", image_path));
             continue;
         }
 
@@ -268,38 +415,85 @@ async fn confluence_upload_page(
             .unwrap_or("image.png")
             .to_string();
 
-        let file_bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let file_bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                attach_failures.push(format!("(읽기 실패: {}) {}", e, file_name));
+                continue;
+            }
+        };
 
-        let attach_url = format!(
-            "{}/wiki/rest/api/content/{}/child/attachment",
-            request.base_url.trim_end_matches('/'),
-            page_id
-        );
+        let attach_url = format!("{}/rest/api/content/{}/child/attachment", base, page_id);
 
-        let part = reqwest::multipart::Part::bytes(file_bytes)
-            .file_name(file_name)
+        let part = match reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(file_name.clone())
             .mime_str("image/png")
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(p) => p,
+            Err(e) => {
+                attach_failures.push(format!("(MIME 설정 실패: {}) {}", e, file_name));
+                continue;
+            }
+        };
 
         let form = reqwest::multipart::Form::new().part("file", part);
 
-        let _ = client
+        match client
             .post(&attach_url)
             .basic_auth(&request.email, Some(&request.token))
             .header("X-Atlassian-Token", "nocheck")
             .multipart(form)
             .send()
-            .await;
+            .await
+        {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    attach_success += 1;
+                } else {
+                    let s = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    let snip = body.chars().take(150).collect::<String>();
+                    attach_failures.push(format!("(HTTP {}: {}) {}", s, snip, file_name));
+                }
+            }
+            Err(e) => {
+                attach_failures.push(format!("(요청 실패: {}) {}", e, file_name));
+            }
+        }
 
         // Rate limit 방어: 이미지 첨부 간 1초 대기
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
+    let summary = if attach_failures.is_empty() {
+        format!(
+            "페이지 생성 성공 — 이미지 {}개 첨부 완료{}",
+            attach_success, move_note
+        )
+    } else {
+        let preview = attach_failures.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        let extra = if attach_failures.len() > 3 {
+            format!(" 외 {}건", attach_failures.len() - 3)
+        } else {
+            String::new()
+        };
+        format!(
+            "페이지 생성 성공 — 이미지 {}개 첨부, {}건 실패{}: {}{}",
+            attach_success,
+            attach_failures.len(),
+            extra,
+            preview,
+            move_note
+        )
+    };
+
+    eprintln!("[confluence_upload_page] {}", summary);
+
     Ok(ConfluenceUploadResult {
         success: true,
         page_id: Some(page_id),
         page_url: Some(page_url),
-        message: "페이지 생성 성공".to_string(),
+        message: summary,
     })
 }
 
@@ -557,7 +751,7 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+,")
                 .build(app)?;
 
-            let app_submenu = SubmenuBuilder::new(app, "FlipbookMaker")
+            let app_submenu = SubmenuBuilder::new(app, "FlipMD")
                 .about(None)
                 .item(&PredefinedMenuItem::separator(app)?)
                 .item(&settings_item)
