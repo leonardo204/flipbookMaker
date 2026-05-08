@@ -1,6 +1,8 @@
 // Playwright는 글로벌 또는 환경변수 PLAYWRIGHT_MODULE_PATH 경로에서 dynamic import.
 // release .app은 자체 node_modules 없음 → 사용자 환경(글로벌 npm install)에 의존.
-const playwrightSpec = process.env.PLAYWRIGHT_MODULE_PATH || 'playwright';
+// ESM에서 디렉토리 import는 unsupported → index.mjs (또는 index.js) 명시 필요.
+const baseSpec = process.env.PLAYWRIGHT_MODULE_PATH;
+const playwrightSpec = baseSpec ? `${baseSpec}/index.mjs` : 'playwright';
 const { chromium } = await import(playwrightSpec);
 import fs from 'fs/promises';
 import path from 'path';

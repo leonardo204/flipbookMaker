@@ -308,14 +308,21 @@ struct RunNodeScriptRequest {
     env: std::collections::HashMap<String, String>,
 }
 
+#[derive(Serialize)]
+struct RunNodeScriptResult {
+    exit_code: i32,
+    stderr: String,
+}
+
 /// Node.js 스크립트를 spawn하고 stdout 라인을 'node-progress' 이벤트로 emit.
-/// 종료 코드를 반환.
+/// 종료 코드 + 누적된 stderr를 반환 (실패 시 frontend에서 에러 메시지 노출).
 #[tauri::command]
 async fn run_node_script(
     app: tauri::AppHandle,
     request: RunNodeScriptRequest,
-) -> Result<i32, String> {
+) -> Result<RunNodeScriptResult, String> {
     use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
     use tauri::Emitter;
@@ -327,6 +334,7 @@ async fn run_node_script(
         "[run_node_script] node={} script={} args={:?}",
         node, request.script_path, request.args
     );
+    eprintln!("[run_node_script] env: {:?}", request.env);
 
     let mut cmd = TokioCommand::new(&node);
     cmd.arg(&request.script_path)
@@ -334,7 +342,6 @@ async fn run_node_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // 추가 환경변수 주입
     for (k, v) in &request.env {
         cmd.env(k, v);
     }
@@ -354,17 +361,39 @@ async fn run_node_script(
         }
     });
 
-    tokio::spawn(async move {
+    // stderr 라인을 누적해서 결과에 포함 — 실패 시 frontend가 사유 노출
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    let stderr_buf_clone = stderr_buf.clone();
+    let stderr_handle = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             eprintln!("[node stderr] {}", line);
+            if let Ok(mut buf) = stderr_buf_clone.lock() {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
         }
     });
 
     let status = child.wait().await.map_err(|e| format!("wait 실패: {}", e))?;
+    let _ = stderr_handle.await;
+
     let code = status.code().unwrap_or(-1);
-    eprintln!("[run_node_script] exit code: {}", code);
-    Ok(code)
+    let stderr_str = stderr_buf
+        .lock()
+        .map(|b| b.clone())
+        .unwrap_or_default();
+
+    eprintln!(
+        "[run_node_script] exit code: {} (stderr {} bytes)",
+        code,
+        stderr_str.len()
+    );
+
+    Ok(RunNodeScriptResult {
+        exit_code: code,
+        stderr: stderr_str,
+    })
 }
 
 #[tauri::command]

@@ -97,11 +97,17 @@ async function runScript(
   });
 
   try {
-    const exitCode = await invoke<number>("run_node_script", {
-      request: { script_path: scriptPath, args, env },
-    });
-    if (exitCode !== 0) {
-      throw new Error(`Script exited with code ${exitCode}`);
+    const result = await invoke<{ exit_code: number; stderr: string }>(
+      "run_node_script",
+      {
+        request: { script_path: scriptPath, args, env },
+      },
+    );
+    if (result.exit_code !== 0) {
+      const stderrSnippet = result.stderr.trim().slice(-500);
+      throw new Error(
+        `스크립트 실패 (exit ${result.exit_code})${stderrSnippet ? `\n${stderrSnippet}` : ""}`,
+      );
     }
   } finally {
     unlisten();
