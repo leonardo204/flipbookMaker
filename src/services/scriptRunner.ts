@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveResource } from "@tauri-apps/api/path";
+import { exists } from "@tauri-apps/plugin-fs";
 
 export interface ProgressEvent {
   event: string;
@@ -133,15 +134,30 @@ export async function runCrawl(
   outputDir: string,
   onProgress?: ProgressCallback,
 ): Promise<void> {
-  // 1. .app 안 scripts 디렉토리 절대 경로 해석
-  // release: .app/Contents/Resources/_up_/scripts/crawl.mjs
-  // dev: 프로젝트 source 경로
-  let scriptPath: string;
-  try {
-    scriptPath = await resolveResource("scripts/crawl.mjs");
-  } catch (e) {
+  // 1. .app 안 scripts 디렉토리 절대 경로 해석.
+  // Tauri는 tauri.conf.json의 resources에 `..`가 포함된 경로를 자동으로
+  // `_up_/` 서브디렉토리로 escape함. dev/release에 따라 위치가 다르므로 후보 순회.
+  const candidates = [
+    "_up_/scripts/crawl.mjs", // release .app: Resources/_up_/scripts/crawl.mjs
+    "scripts/crawl.mjs",      // dev 또는 일반적인 resource layout
+  ];
+  let scriptPath: string | null = null;
+  const tried: string[] = [];
+  for (const c of candidates) {
+    try {
+      const resolved = await resolveResource(c);
+      tried.push(resolved);
+      if (await exists(resolved)) {
+        scriptPath = resolved;
+        break;
+      }
+    } catch (e) {
+      tried.push(`${c} (resolve error: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+  if (!scriptPath) {
     throw new Error(
-      `crawl.mjs 경로를 찾을 수 없습니다: ${e instanceof Error ? e.message : String(e)}`,
+      `crawl.mjs 경로를 찾을 수 없습니다. 시도한 경로:\n${tried.join("\n")}`,
     );
   }
 
