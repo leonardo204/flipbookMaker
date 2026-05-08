@@ -88,8 +88,9 @@ const styles = {
   header: {
     alignItems: "center",
     display: "flex",
-    gap: "16px",
+    gap: "12px",
     marginBottom: "28px",
+    flexWrap: "wrap" as const,
   },
   title: {
     color: "var(--color-text)",
@@ -220,7 +221,14 @@ function stageLabelText(stage: StageStatus): string {
 export default function ConvertPage() {
   const navigate = useNavigate();
   const { settings } = useSettings();
-  const { workflow, setPhase, updatePageStatus, updatePageSubstatus } = useWorkflow();
+  const {
+    workflow,
+    setPhase,
+    updatePageStatus,
+    updatePageSubstatus,
+    updatePageSelected,
+    setAllPagesSelected,
+  } = useWorkflow();
 
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState<StageStatus>("idle");
@@ -428,6 +436,63 @@ export default function ConvertPage() {
   };
 
   /**
+   * 선택된 미완료 섹션만 일괄 변환 (재변환 X — done은 [재변환] 버튼 별도 사용).
+   * 변환 중에는 호출 차단.
+   */
+  const convertSelected = async () => {
+    if (singleRunningRef.current || stage === "converting") {
+      console.log("[ConvertPage] 다른 작업 진행 중 — 선택 변환 차단");
+      return;
+    }
+    const targets = pages.filter(
+      (p) => p.selected && p.status !== "done" && p.status !== "converting",
+    );
+    if (targets.length === 0) {
+      console.log("[ConvertPage] 변환 대상 없음 (선택+미완료+미진행)");
+      return;
+    }
+
+    singleRunningRef.current = true;
+    setLocalError(null);
+    setStopped(false);
+    setStage("converting");
+    setPhase("converting");
+    stoppedRef.current = false;
+
+    const perPageProgress = 100 / targets.length;
+    let completedThisRun = 0;
+
+    try {
+      for (let pi = 0; pi < targets.length; pi++) {
+        if (stoppedRef.current) break;
+        const ok = await processOnePage(targets[pi]);
+        if (ok) completedThisRun++;
+        setProgress(Math.round(perPageProgress * (pi + 1)));
+      }
+
+      if (!stoppedRef.current) {
+        setProgress(100);
+        // 전체 done 여부 재산출
+        const allDoneNow = pages.every(
+          (p) => p.status === "done" || (!p.selected && p.status === "pending"),
+        );
+        if (allDoneNow) {
+          setStage("done");
+          setPhase("done");
+        } else {
+          setStage("idle");
+          setPhase("idle");
+        }
+      }
+      // doneCount 재산출
+      const total = pages.filter((p) => p.status === "done").length + completedThisRun;
+      setDoneCount(total);
+    } finally {
+      singleRunningRef.current = false;
+    }
+  };
+
+  /**
    * 단일 섹션만 변환 (개별 변환 / 재시도 버튼).
    * 일괄 변환 도중에는 호출 차단 (singleRunningRef).
    */
@@ -492,9 +557,28 @@ export default function ConvertPage() {
   const selectedTotal = selectedPages.length;
   const displayDone = doneCount;
 
+  const busyAny = stage === "converting" || singleRunningRef.current;
+  const pendingSelectedCount = pages.filter(
+    (p) => p.selected && p.status !== "done" && p.status !== "converting",
+  ).length;
+
   return (
     <div style={styles.page}>
       <div style={styles.header}>
+        <Button
+          variant="secondary"
+          onClick={() => navigate("/")}
+          disabled={busyAny}
+        >
+          처음으로
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => navigate("/analyze")}
+          disabled={busyAny}
+        >
+          분석 화면
+        </Button>
         <h1 style={styles.title}>Markdown 변환</h1>
       </div>
 
@@ -524,6 +608,40 @@ export default function ConvertPage() {
           </StatusCard>
         )}
 
+        {/* 선택 변환 컨트롤바 */}
+        {totalPages > 0 && (
+          <div
+            style={{
+              alignItems: "center",
+              display: "flex",
+              gap: "8px",
+              flexWrap: "wrap" as const,
+            }}
+          >
+            <Button
+              variant="secondary"
+              onClick={() => setAllPagesSelected(true)}
+              disabled={busyAny}
+            >
+              전체 선택
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setAllPagesSelected(false)}
+              disabled={busyAny}
+            >
+              전체 해제
+            </Button>
+            <div style={{ flex: 1 }} />
+            <Button
+              onClick={convertSelected}
+              disabled={busyAny || pendingSelectedCount === 0}
+            >
+              선택한 {pendingSelectedCount}개 변환
+            </Button>
+          </div>
+        )}
+
         {/* 문서 목록 */}
         {totalPages > 0 && (
           <div style={styles.docList}>
@@ -551,10 +669,18 @@ export default function ConvertPage() {
                   style={{
                     ...styles.docRowOuter,
                     borderBottom: isLast ? "none" : "1px solid var(--color-border)",
-                    opacity: dim ? 0.55 : 1,
+                    opacity: dim ? 0.7 : 1,
                   }}
                 >
                   <div style={styles.docItem}>
+                    <input
+                      type="checkbox"
+                      checked={page.selected}
+                      disabled={busy || page.status === "converting"}
+                      onChange={(e) => updatePageSelected(page.name, e.target.checked)}
+                      style={{ cursor: busy ? "not-allowed" : "pointer", marginRight: "4px" }}
+                      title="일괄 변환 대상에 포함"
+                    />
                     <span style={styles.docName}>{page.name}.md</span>
                     <div style={styles.statusGroup}>
                       {page.status === "done" && (
@@ -727,13 +853,14 @@ export default function ConvertPage() {
           )}
 
           {stage === "done" && (
-            <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+            <div style={{ display: "flex", gap: "10px", width: "100%", flexWrap: "wrap" as const }}>
               <Button
                 variant="secondary"
                 onClick={() => invoke("open_path", { path: outputDir }).catch((e) => alert(`폴더 열기 실패: ${e}`))}
               >
                 결과 폴더 열기
               </Button>
+              <div style={{ flex: 1 }} />
               <Button onClick={() => navigate("/upload")}>Confluence 업로드</Button>
             </div>
           )}

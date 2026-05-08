@@ -300,6 +300,22 @@ export default function AnalyzePage() {
     }
     if (started.current) return;
     started.current = true;
+
+    // 이미 sitemap이 있으면 (ConvertPage에서 돌아온 경우 등) 재호출 안 하고 복원만
+    // pages가 있으면 그 selected 상태로 checkedIds 복원
+    if (workflow.sitemap && workflow.sitemap.length > 0) {
+      console.log("[AnalyzePage] 기존 sitemap 재사용 — Figma API 재호출 생략");
+      setSitemapData(workflow.sitemap);
+      if (workflow.pages.length > 0) {
+        // ConvertPage 체크박스 변경 사항을 그대로 반영
+        setCheckedIds(new Set(workflow.pages.filter((p) => p.selected).map((p) => p.path)));
+      } else {
+        setCheckedIds(new Set(workflow.sitemap.map((n) => n.id)));
+      }
+      setStatus("done");
+      return;
+    }
+
     startCrawl();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -419,20 +435,25 @@ export default function AnalyzePage() {
   const isAxshare = workflow.sourceType === "axshare";
 
   const handleStartConvert = () => {
-    // 모든 섹션을 PageEntry로 변환 — 체크되지 않은 것도 ConvertPage 목록에 보이게
-    // 이름 기준 오름차순 정렬 (00, 01, 02, ... 순서로 처리/표시)
-    // selected 플래그로 일괄 변환 대상 여부만 구분 (체크 안 한 항목도 개별 [변환] 가능)
+    // 모든 섹션을 PageEntry로 변환 — 체크되지 않은 것도 ConvertPage 목록에 보이게.
+    // 분석 화면을 다시 방문한 경우(workflow.pages가 비어있지 않음): 기존 status를 보존하고
+    // selected만 새 체크 상태로 갱신 (이미 변환된 섹션을 다시 pending으로 돌리지 않음).
+    const existing = new Map(workflow.pages.map((p) => [p.path, p]));
     const selectedSections: PageEntry[] = sitemapData
       .slice()
       .sort((a, b) => a.pageName.localeCompare(b.pageName, undefined, { numeric: true, sensitivity: "base" }))
-      .map((n) => ({
-        name: n.pageName,
-        slug: slugify(n.pageName),
-        sectionDir: "",
-        path: n.id,
-        status: "pending" as const,
-        selected: checkedIds.has(n.id),
-      }));
+      .map((n) => {
+        const prev = existing.get(n.id);
+        return {
+          name: n.pageName,
+          slug: slugify(n.pageName),
+          sectionDir: "",
+          path: n.id,
+          status: prev?.status ?? ("pending" as const),
+          substatus: prev?.substatus,
+          selected: checkedIds.has(n.id),
+        };
+      });
     setSitemap(sitemapData);
     setPages(selectedSections);
     navigate("/convert");

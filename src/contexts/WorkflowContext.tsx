@@ -51,6 +51,8 @@ interface WorkflowContextValue {
   setPages: (pages: PageEntry[]) => void;
   updatePageStatus: (name: string, status: PageStatus) => void;
   updatePageSubstatus: (name: string, substatus: string | undefined) => void;
+  updatePageSelected: (name: string, selected: boolean) => void;
+  setAllPagesSelected: (selected: boolean) => void;
   setPhase: (phase: WorkflowPhase) => void;
   setError: (error: string | null) => void;
   reset: () => void;
@@ -78,6 +80,8 @@ const WorkflowContext = createContext<WorkflowContextValue>({
   setPages: () => {},
   updatePageStatus: () => {},
   updatePageSubstatus: () => {},
+  updatePageSelected: () => {},
+  setAllPagesSelected: () => {},
   setPhase: () => {},
   setError: () => {},
   reset: () => {},
@@ -132,6 +136,22 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  const updatePageSelected = useCallback((name: string, selected: boolean) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) =>
+        p.name === name ? { ...p, selected } : p
+      ),
+    }));
+  }, []);
+
+  const setAllPagesSelected = useCallback((selected: boolean) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      pages: prev.pages.map((p) => ({ ...p, selected })),
+    }));
+  }, []);
+
   const setPhase = useCallback((currentPhase: WorkflowPhase) => {
     setWorkflow((prev) => ({ ...prev, currentPhase }));
   }, []);
@@ -156,11 +176,13 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setPages,
       updatePageStatus,
       updatePageSubstatus,
+      updatePageSelected,
+      setAllPagesSelected,
       setPhase,
       setError,
       reset,
     }),
-    [workflow, setUrl, setOutputDir, setSourceType, setDocumentName, setSitemap, setPages, updatePageStatus, updatePageSubstatus, setPhase, setError, reset]
+    [workflow, setUrl, setOutputDir, setSourceType, setDocumentName, setSitemap, setPages, updatePageStatus, updatePageSubstatus, updatePageSelected, setAllPagesSelected, setPhase, setError, reset]
   );
 
   return (
