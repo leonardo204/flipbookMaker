@@ -36,6 +36,52 @@ function buildFigmaPageUrl(baseUrl: string, nodeId: string): string {
 }
 
 /**
+ * Figma API/네트워크 에러를 사용자 친화적 한국어로 분류.
+ * 토큰 미입력 / 한도 초과 / 권한 부족 / 네트워크 오류 등을 명확히 구분.
+ */
+function classifyFigmaError(rawMsg: string, stage: string, pageName: string): string {
+  const msg = rawMsg.toLowerCase();
+
+  if (msg.includes("429") || msg.includes("rate limit") || msg.includes("한도 초과") || msg.includes("rate limited")) {
+    return (
+      `Figma API rate limit 초과 (${stage}, ${pageName})\n` +
+      `Pro 한도: 메타 15/min, 이미지 6/min.\n` +
+      `해결: 1-2분 대기 후 [재시도]. 자주 발생하면 token 별도 발급 또는 Pro 업그레이드.`
+    );
+  }
+  if (msg.includes("401") || msg.includes("403") || msg.includes("invalid token") || msg.includes("forbidden")) {
+    return (
+      `Figma 인증 실패 (${stage}, ${pageName})\n` +
+      `Personal Access Token이 만료되었거나 권한이 부족함.\n` +
+      `해결: Settings에서 새 PAT 발급 후 입력. PAT는 file:read 스코프 필요.`
+    );
+  }
+  if (msg.includes("404") || msg.includes("not found")) {
+    return (
+      `Figma 노드를 찾을 수 없음 (${stage}, ${pageName})\n` +
+      `해당 섹션이 삭제되었거나 file_key/node_id가 변경됐을 수 있음.\n` +
+      `해결: Figma URL을 다시 확인하고 [분석 화면]에서 sitemap 새로고침.`
+    );
+  }
+  if (msg.includes("400") || msg.includes("bad request")) {
+    return (
+      `Figma API 잘못된 요청 (${stage}, ${pageName})\n` +
+      `노드 ID 형식이 잘못됐거나 batch가 너무 큼.\n` +
+      `상세: ${rawMsg.slice(0, 200)}`
+    );
+  }
+  if (msg.includes("network") || msg.includes("econnrefused") || msg.includes("etimedout") || msg.includes("fetch")) {
+    return (
+      `네트워크 오류 (${stage}, ${pageName})\n` +
+      `Figma API 또는 S3 연결 실패. 인터넷 연결 / VPN / 방화벽 확인.\n` +
+      `상세: ${rawMsg.slice(0, 200)}`
+    );
+  }
+  // 기본
+  return `Figma ${stage} 실패 (${pageName})\n상세: ${rawMsg.slice(0, 300)}`;
+}
+
+/**
  * 노드 트리에서 렌더링 대상 프레임을 수집해 시각 순서(상→하, 좌→우)로 정렬한 ID 목록 반환.
  * - 직속 자식 중 FRAME/COMPONENT/INSTANCE 대상
  * - SECTION/GROUP은 한 단계 더 들어가서 그 안의 FRAME 수집
@@ -304,7 +350,7 @@ export default function ConvertPage() {
     }
 
     if (isFigma && fileKey) {
-      // Step 1: 메타데이터(노드 트리)
+      // Step 1: 메타데이터(노드 트리) — 여기 실패는 fatal
       let nodeDetail: FigmaNode | null = null;
       try {
         updatePageSubstatus(page.name, "노드 트리 수집");
@@ -315,16 +361,19 @@ export default function ConvertPage() {
         pageUrl = buildFigmaPageUrl(workflow.url, page.path);
       } catch (e) {
         console.error(`[ConvertPage] Meta fetch failed for "${page.name}":`, e);
-        textContent = `(Figma 노드 데이터 수집 실패: ${e})`;
+        const errStr = e instanceof Error ? e.message : String(e);
+        const detailedError = classifyFigmaError(errStr, "메타 fetch", page.name);
+        updatePageStatus(page.name, "error");
+        setPageErrors((prev) => ({ ...prev, [page.name]: detailedError }));
+        return false;
       }
 
-      // Step 2: 이미지 렌더 (best-effort)
+      // Step 2: 이미지 렌더 (best-effort — 실패해도 메타로 계속)
       if (nodeDetail) {
         const frameIds = collectFrameIds(nodeDetail);
         if (frameIds.length > 0) {
           const imageDir = `${outputDir}/_figma_images/${page.slug}`;
           try {
-            // scale=1 — Anthropic API 이미지 합산 한도(~20MB) 회피
             const downloaded = await renderFigmaFramesToFiles(
               fileKey,
               frameIds,
@@ -343,6 +392,11 @@ export default function ConvertPage() {
             console.log(
               `[ConvertPage] Section "${page.name}": ${imagePaths.length}/${frameIds.length} 이미지 다운로드 성공`,
             );
+            if (imagePaths.length === 0 && frameIds.length > 0) {
+              console.warn(
+                `[ConvertPage] 모든 이미지 다운로드 실패 — 메타만으로 변환 진행 (${page.name})`,
+              );
+            }
           } catch (e) {
             console.warn(`[ConvertPage] 이미지 렌더 실패(메타는 유지) "${page.name}":`, e);
           }

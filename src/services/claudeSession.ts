@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { classifyClaudeErrorPublic } from "./claudeService";
 
 export type SessionStatus = "idle" | "connecting" | "connected" | "busy" | "error";
 type StatusListener = (status: SessionStatus) => void;
@@ -111,10 +112,7 @@ class ClaudeSession {
         result.stdout.slice(-500) || "(empty)",
       );
 
-      const detail =
-        result.stderr.trim() ||
-        result.stdout.trim().slice(-300) ||
-        `claude exit ${result.exit_code} (stdout/stderr 모두 비어있음, ${result.elapsed_ms}ms)`;
+      const detail = classifyClaudeErrorPublic(result, "session");
       throw new Error(detail);
     }
 

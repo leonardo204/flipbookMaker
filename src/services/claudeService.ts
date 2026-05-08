@@ -16,6 +16,131 @@ interface ClaudePrintResult {
   elapsed_ms: number;
 }
 
+/**
+ * 외부에서 재사용 가능한 에러 분류 (claudeSession에서도 호출).
+ */
+export function classifyClaudeErrorPublic(
+  result: { stdout: string; stderr: string; exit_code: number | null; elapsed_ms: number },
+  context: string = "",
+): string {
+  return classifyClaudeError(result as ClaudePrintResult, context);
+}
+
+/**
+ * Claude CLI 실패 결과를 사용자 친화적 한국어 메시지로 분류.
+ *
+ * Claude Code CLI는 API 호출이 거부돼도 stdout에 JSON 응답을 남기고 exit 1로 끝나는 경우가 많음.
+ * stderr는 비어있을 수 있으니 stdout JSON을 우선 파싱해서 의미 있는 사유를 추출한다.
+ *
+ * 주요 패턴:
+ * - tokens=0 + iterations=[] + modelUsage={} → API 호출 자체가 안 됨 (rate limit / 인증 / quota)
+ * - terminal_reason: "image_error" → 이미지 합산 크기 한도 초과
+ * - terminal_reason: "context_window_exceeded" → 입력이 컨텍스트 한도 초과
+ * - terminal_reason: "max_tokens" → 출력 길이 한도 초과
+ * - terminal_reason: "permission_denied" → 권한 문제
+ */
+function classifyClaudeError(result: ClaudePrintResult, pageName: string): string {
+  const elapsed = result.elapsed_ms;
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+
+  // stdout 끝의 JSON 객체 추출 시도
+  let parsed: Record<string, any> | null = null;
+  try {
+    const trimmed = stdout.trim();
+    const lastNewline = trimmed.lastIndexOf("\n");
+    const lastLine = lastNewline >= 0 ? trimmed.slice(lastNewline + 1) : trimmed;
+    parsed = JSON.parse(lastLine);
+  } catch {
+    // 그냥 stdout 전체 파싱 시도
+    try {
+      parsed = JSON.parse(stdout.trim());
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (parsed) {
+    const terminalReason = parsed.terminal_reason as string | undefined;
+    const usage = parsed.usage as Record<string, number> | undefined;
+    const iterations = parsed.iterations as unknown[] | undefined;
+    const modelUsage = parsed.modelUsage as Record<string, unknown> | undefined;
+    const errField = (parsed.error as string | undefined) || (parsed.message as string | undefined);
+
+    // 1. API 호출 자체가 거부된 경우 — input/output tokens 모두 0 + iterations 0 + modelUsage 비어있음
+    const tokensZero =
+      usage &&
+      (usage.input_tokens ?? 0) === 0 &&
+      (usage.output_tokens ?? 0) === 0;
+    const noWork =
+      (!iterations || iterations.length === 0) &&
+      (!modelUsage || Object.keys(modelUsage).length === 0);
+
+    if (tokensZero && noWork) {
+      const elapsedSec = (elapsed / 1000).toFixed(1);
+      return (
+        `Anthropic API 호출 거부 — 토큰 0건, 실제 분석 0회 (${elapsedSec}초 만에 종료).\n` +
+        `가능한 원인:\n` +
+        `  • 조직 단위 rate limit 또는 분당 요청 한도 초과 (잠시 후 재시도 필요)\n` +
+        `  • 입력 토큰 한도 초과 (이번 prompt: ${formatBytes(stdout.length + parsed?.uuid?.length || 0)} ≈ ${pageName} 메타+이미지 합산)\n` +
+        `  • Claude API 인증 만료 (claude login 재시도)\n` +
+        `  • 결제/크레딧 문제\n` +
+        `해결: 1-2분 대기 후 [재시도] 또는 다른 섹션부터 처리`
+      );
+    }
+
+    // 2. terminal_reason 기반 분류
+    if (terminalReason === "image_error") {
+      return (
+        `이미지 처리 실패 — Anthropic API가 이미지를 처리할 수 없음.\n` +
+        `가능한 원인: 이미지 합산 크기 한도(~20MB) 초과, 손상된 PNG, 지원되지 않는 포맷.\n` +
+        `해결: settings에서 scale 더 낮추거나, 큰 섹션은 frame 일부만 선택해 변환`
+      );
+    }
+    if (terminalReason === "context_window_exceeded" || terminalReason === "input_too_long") {
+      return (
+        `컨텍스트 한도 초과 — 입력이 너무 큼.\n` +
+        `prompt 크기: ${formatBytes(stdout.length)}, 이미지 다수 포함 시 위험.\n` +
+        `해결: 섹션을 더 작게 나누거나, 이미지 일부 제외 후 [재시도]`
+      );
+    }
+    if (terminalReason === "max_tokens") {
+      return (
+        `출력 길이 한도 초과 — Claude가 응답 도중 잘림.\n` +
+        `해결: 섹션이 너무 큼. 더 작은 단위로 나눠서 변환`
+      );
+    }
+    if (terminalReason === "permission_denied") {
+      return (
+        `권한 거부 — Claude가 도구(Read/Write/Bash) 사용 권한 없음.\n` +
+        `해결: --dangerously-skip-permissions 플래그 확인, claude 재로그인`
+      );
+    }
+    if (errField) {
+      return `Claude 에러: ${errField} (terminal_reason=${terminalReason ?? "unknown"})`;
+    }
+
+    if (terminalReason && terminalReason !== "completed") {
+      return `Claude 비정상 종료 — terminal_reason: ${terminalReason}`;
+    }
+  }
+
+  // 3. JSON 파싱 실패 시 stderr/stdout 끝부분으로 fallback
+  if (stderr.trim()) {
+    return `Claude stderr: ${stderr.trim().slice(0, 500)}`;
+  }
+  if (stdout.trim()) {
+    return `Claude 비정상 종료 (exit ${result.exit_code}, ${(elapsed / 1000).toFixed(1)}초)\n출력 끝부분: ${stdout.trim().slice(-300)}`;
+  }
+  return `Claude exit ${result.exit_code} — 출력 없음 (${(elapsed / 1000).toFixed(1)}초)`;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(2)}MB`;
+}
+
 function buildPrompt(
   pageUrl: string,
   pageName: string,
@@ -338,9 +463,7 @@ async function generateMarkdownFallback(
     console.error(`[claudeService] stderr (${result.stderr.length} bytes):`, result.stderr || "(empty)");
     console.error(`[claudeService] stdout tail:`, result.stdout.slice(-500) || "(empty)");
 
-    const detailMsg = result.stderr.trim()
-      || result.stdout.trim().slice(-300)
-      || `claude exit ${result.exit_code} (stdout/stderr 모두 비어있음)`;
+    const detailMsg = classifyClaudeError(result, pageName);
 
     return {
       pageName,
@@ -353,7 +476,7 @@ async function generateMarkdownFallback(
       pageName,
       outputPath: "",
       success: false,
-      error: `claude_print 호출 실패: ${e instanceof Error ? e.message : String(e)}`,
+      error: `claude_print 호출 실패 (Tauri/Rust 단계): ${e instanceof Error ? e.message : String(e)}`,
     };
   }
 }
