@@ -20,7 +20,7 @@
 
 ### 개요
 
-**FlipbookMaker** — Figma/Axure 플립북을 텍스트+Mermaid Markdown으로 변환하고 Confluence에 업로드하는 데스크톱 앱
+**FlipMD** (이전: FlipbookMaker) — Figma/Axure 플립북을 텍스트+Mermaid Markdown으로 변환하고 Confluence에 업로드하는 **macOS 전용** 데스크톱 앱 (Apple Silicon, 12.0+)
 
 ### 목적 / 목표 (구현 판단 시 항상 우선)
 
@@ -52,7 +52,7 @@
 - [셋업](Ref-docs/claude/setup.md) — 새 환경 초기 설정
 - [Agent Delegation](Ref-docs/claude/agent-delegation.md) — 에이전트 위임/파이프라인 상세
 - [변환 플랜](Ref-docs/axshare-to-markdown-plan.md) — axshare→Markdown 변환 로직 레퍼런스 (완료)
-- [앱 플랜](Ref-docs/flipbook-maker-app-plan.md) — FlipbookMaker 앱 개발 플랜 (현재 작업)
+- [앱 플랜](Ref-docs/flipbook-maker-app-plan.md) — FlipMD 앱 개발 플랜 (현재 작업, 파일명은 이전 이름 유지)
 - [Summa-v2 참조](~/work/Summa-v2) — Tauri auto-update, 빌드 설정 패턴
 
 ### 핵심 규칙

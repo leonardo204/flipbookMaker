@@ -1,12 +1,12 @@
 [package]
-name = "flipbook-maker"
-version = "1.1.0"
-description = "FlipbookMaker - Convert flipbooks to Markdown and upload to Confluence"
-authors = ["FlipbookMaker Team"]
+name = "flipmd"
+version = "1.2.0"
+description = "FlipMD - Convert Figma/Axshare flipbooks to Markdown and upload to Confluence"
+authors = ["FlipMD Team"]
 edition = "2021"
 
 [lib]
-name = "flipbook_maker_lib"
+name = "flipmd_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -24,6 +24,6 @@ tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
+keyring = { version = "3", features = ["apple-native"] }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 tokio = { version = "1", features = ["full"] }

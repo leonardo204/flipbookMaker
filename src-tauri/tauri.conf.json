@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "FlipbookMaker",
-  "version": "1.1.0",
+  "productName": "FlipMD",
+  "version": "1.2.0",
   "identifier": "com.altimedia.flipbookmaker",
   "build": {
     "frontendDist": "../dist",
@@ -12,12 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "FlipbookMaker",
+        "title": "FlipMD",
         "width": 1000,
-        "height": 700,
-        "minWidth": 800,
-        "minHeight": 600,
-        "resizable": true,
+        "height": 900,
+        "minWidth": 1000,
+        "minHeight": 900,
+        "maxWidth": 1000,
+        "maxHeight": 900,
+        "resizable": false,
         "center": true
       }
     ],
@@ -27,29 +29,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "app"],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.icns"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "Developer ID Application: YONGSUB LEE (XU8HS9JUTS)",
       "entitlements": "entitlements.plist"
-    },
-    "windows": {
-      "certificateThumbprint": null,
-      "timestampUrl": "http://timestamp.digicert.com",
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
     }
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3ODkyMzRCM0VGQ0M2N0EKUldSNnh2dytTeU9KNStJenlWbVlhMERoZGdYYWtZWmZQSHRQcysxVkdFeWN0RUlERllZcUdTeEgK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhEMDgwMDk5NjY2ODAyQzkKUldUSkFtaG1tUUFJalhXbG1JQmhuU0l1Z2FHSFFMT3NHcndzRklDU2ljWjhkMzBmQmVUUUdnMXIK",
       "endpoints": [
         "https://github.com/leonardo204/flipbookMaker/releases/latest/download/latest.json"
       ]

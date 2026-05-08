@@ -1,6 +1,9 @@
-# FlipbookMaker
+# FlipMD
 
-> Figma UI 플립북을 한국어 마크다운(텍스트 + Mermaid)으로 변환해 Confluence에 업로드하는 데스크톱 앱
+> Figma/Axshare UI 플립북을 한국어 마크다운(텍스트 + Mermaid)으로 변환해 Confluence에 업로드하는 **macOS** 데스크톱 앱 (Apple Silicon)
+> (이전 이름: FlipbookMaker)
+>
+> Windows 지원은 추후 검토. 현재는 macOS Monterey(12.0)+ 만 지원합니다.
 
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev/)

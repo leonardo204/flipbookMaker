@@ -1146,8 +1146,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "flipbook-maker"
-version = "1.1.0"
+name = "flipmd"
+version = "1.2.0"
 dependencies = [
  "keyring",
  "log",
@@ -2223,11 +2223,9 @@ version = "3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
 dependencies = [
- "byteorder",
  "log",
  "security-framework 2.11.1",
  "security-framework 3.7.0",
- "windows-sys 0.60.2",
  "zeroize",
 ]
 
