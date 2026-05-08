@@ -187,8 +187,6 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
   const [atlassianUrl, setAtlassianUrl] = useState(settings.atlassianUrl);
   const [confluenceEmail, setConfluenceEmail] = useState(settings.confluenceEmail);
   const [confluenceToken, setConfluenceToken] = useState("");
-  const [spaceKey, setSpaceKey] = useState(settings.spaceKey);
-  const [parentPageUrl, setParentPageUrl] = useState(settings.parentPageUrl);
   const [confluenceConnected, setConfluenceConnected] = useState<boolean | null>(
     settings.confluenceVerified ? true : null
   );
@@ -325,15 +323,12 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
         url: atlassianUrl.trim(),
         email: confluenceEmail.trim(),
         token: confluenceToken,
-        spaceKey: spaceKey.trim(),
       });
       setConfluenceConnected(true);
       setConfluenceMessage("Confluence에 성공적으로 연결되었습니다.");
       updateSettings({
         atlassianUrl: atlassianUrl.trim(),
         confluenceEmail: confluenceEmail.trim(),
-        spaceKey: spaceKey.trim(),
-        parentPageUrl: parentPageUrl.trim(),
         confluenceVerified: true,
       });
       await invoke("save_credential", {
@@ -562,18 +557,7 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
               label="API 토큰"
               type="password"
             />
-            <TextInput
-              value={spaceKey}
-              onChange={setSpaceKey}
-              placeholder="MYSPACE"
-              label="기본 Space Key"
-            />
-            <TextInput
-              value={parentPageUrl}
-              onChange={setParentPageUrl}
-              placeholder="https://your-domain.atlassian.net/wiki/... (선택)"
-              label="기본 부모 페이지 URL"
-            />
+            {/* Space Key는 별도 설정으로 두지 않음 — 업로드 시 부모 페이지 URL에서 자동 추출 */}
             {confluenceConnected !== null && (
               <StatusCard
                 title="연결 상태"
@@ -614,7 +598,7 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
               <TextInput
                 value={settings.outputPath}
                 onChange={(v) => updateSettings({ outputPath: v })}
-                placeholder="~/Documents/FlipbookMaker"
+                placeholder="~/Documents/FlipMD"
                 label="기본 저장 경로"
               />
               <Button variant="secondary" onClick={handleSelectFolder}>

@@ -14,8 +14,9 @@ import {
   renderFigmaFramesToFiles,
   type FigmaNode,
 } from "../services/figmaService";
+import { readWorkspaceMeta, writeWorkspaceMeta, type WorkspaceMeta } from "../services/workspace";
 
-const FALLBACK_OUTPUT_DIR = "~/Documents/FlipbookMaker/output";
+const FALLBACK_OUTPUT_DIR = "~/Documents/FlipMD/output";
 
 type StageStatus = "idle" | "converting" | "done" | "error";
 
@@ -290,7 +291,8 @@ export default function ConvertPage() {
   const started = useRef(false);
   const stoppedRef = useRef(false);
 
-  const outputDir = workflow.outputDir || settings.outputPath || FALLBACK_OUTPUT_DIR;
+  // workspaceDir 우선 — 없으면 outputDir → settings.outputPath 순으로 fallback
+  const outputDir = workflow.workspaceDir || workflow.outputDir || settings.outputPath || FALLBACK_OUTPUT_DIR;
   const pages = workflow.pages;
 
   useEffect(() => {
@@ -313,6 +315,39 @@ export default function ConvertPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // workflow.pages 변경 시 _meta.json sections 갱신 (500ms debounce)
+  const metaDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const wsDir = workflow.workspaceDir;
+    if (!wsDir || pages.length === 0) return;
+
+    if (metaDebounceRef.current) clearTimeout(metaDebounceRef.current);
+    metaDebounceRef.current = setTimeout(async () => {
+      try {
+        const existingMeta = await readWorkspaceMeta(wsDir);
+        if (!existingMeta) return;
+
+        const sections: WorkspaceMeta["sections"] = pages.map((p) => ({
+          name: p.name,
+          slug: p.slug,
+          path: p.path,
+          sectionDir: p.sectionDir,
+          status: p.status,
+          selected: p.selected,
+        }));
+
+        await writeWorkspaceMeta(wsDir, { ...existingMeta, sections });
+      } catch (e) {
+        console.warn("[ConvertPage] _meta.json sections 갱신 실패:", e);
+      }
+    }, 500);
+
+    return () => {
+      if (metaDebounceRef.current) clearTimeout(metaDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages, workflow.workspaceDir]);
 
   /**
    * 단일 섹션 변환 — 데이터 수집(메타+이미지) + Claude 호출 + 결과 반영.

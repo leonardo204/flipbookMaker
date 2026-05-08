@@ -8,6 +8,14 @@ import { useWorkflow, type SitemapNode, type PageEntry } from "../contexts/Workf
 import { useSettings } from "../contexts/SettingsContext";
 import { runCrawl } from "../services/scriptRunner";
 import { getFigmaFileStructure, getFigmaFileMeta, getFigmaNodeDetail, extractFileKey, isEmptyFigmaSection, type FigmaNode } from "../services/figmaService";
+import {
+  deriveWorkspaceSlug,
+  resolveOutputRoot,
+  ensureWorkspaceDir,
+  readWorkspaceMeta,
+  writeWorkspaceMeta,
+  type WorkspaceMeta,
+} from "../services/workspace";
 
 /**
  * scripts/lib/slug.mjs의 slugify 로직을 TypeScript로 포팅
@@ -258,7 +266,17 @@ function SitemapTree({
 export default function AnalyzePage() {
   const navigate = useNavigate();
   const { settings } = useSettings();
-  const { workflow, setSitemap, setPages, setDocumentName, setPhase, setError: setWorkflowError } = useWorkflow();
+  const {
+    workflow,
+    setSitemap,
+    setPages,
+    setDocumentName,
+    setPhase,
+    setError: setWorkflowError,
+    setWorkspaceDir,
+    setWorkspaceSlug,
+    setFileKey,
+  } = useWorkflow();
 
   const [crawlProgress, setCrawlProgress] = useState({ current: 0, total: 0, page: "" });
   const [status, setStatus] = useState<"idle" | "crawling" | "done" | "error">("idle");
@@ -312,6 +330,14 @@ export default function AnalyzePage() {
       } else {
         setCheckedIds(new Set(workflow.sitemap.map((n) => n.id)));
       }
+      // workspaceDir이 없으면 복원 시도 (settings 기반)
+      if (!workflow.workspaceDir && workflow.workspaceSlug) {
+        resolveOutputRoot(workflow.outputDir || settings.outputPath).then((root) => {
+          ensureWorkspaceDir(root, workflow.workspaceSlug).then((dir) => {
+            setWorkspaceDir(dir);
+          });
+        });
+      }
       setStatus("done");
       return;
     }
@@ -342,14 +368,27 @@ export default function AnalyzePage() {
     setPhase("crawling");
     setLocalError(null);
 
-    const outputDir = workflow.outputDir || settings.outputPath;
+    const rawOutputDir = workflow.outputDir || settings.outputPath;
 
     try {
+      // outputPath의 '~' 해석
+      const outputRoot = await resolveOutputRoot(rawOutputDir);
+
       if (workflow.sourceType === "axshare") {
-        // Axshare 경로: runCrawl로 크롤링 후 sitemap.json 읽기
+        // Axshare 경로: workspace slug 결정 후 workspace 디렉토리 생성, runCrawl 실행
+        const slug = deriveWorkspaceSlug({
+          sourceType: "axshare",
+          url: workflow.url,
+        });
+        const workspaceDir = await ensureWorkspaceDir(outputRoot, slug);
+        setWorkspaceSlug(slug);
+        setWorkspaceDir(workspaceDir);
+
+        console.log(`[AnalyzePage] Axshare workspace: ${workspaceDir}`);
+
         let resolvedSitemapPath: string | null = null;
 
-        await runCrawl(workflow.url, outputDir, (event) => {
+        await runCrawl(workflow.url, workspaceDir, (event) => {
           if (event.event === "progress") {
             setCrawlProgress({
               current: event.current ?? 0,
@@ -371,12 +410,30 @@ export default function AnalyzePage() {
         setSitemap(sorted);
         setSitemapData(sorted);
         setCheckedIds(new Set(sorted.map((n) => n.id)));
+
+        // _meta.json 초기 저장
+        const newMeta: WorkspaceMeta = {
+          version: 1,
+          sourceUrl: workflow.url,
+          sourceType: "axshare",
+          documentName: "",
+          sections: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        const existingMeta = await readWorkspaceMeta(workspaceDir);
+        await writeWorkspaceMeta(workspaceDir, existingMeta
+          ? { ...existingMeta, sections: [] }
+          : newMeta
+        );
       } else if (workflow.sourceType === "figma") {
-        // Figma 경로: Figma API로 파일 구조 가져오기
+        // Figma 경로: documentName 먼저 수집 후 workspace slug 결정
         const fileKey = extractFileKey(workflow.url);
         if (!fileKey) {
           throw new Error("Figma URL에서 파일 키를 추출할 수 없습니다.");
         }
+
+        setFileKey(fileKey);
 
         const nodeId = extractNodeId(workflow.url);
         let sitemapNodes: SitemapNode[];
@@ -402,6 +459,19 @@ export default function AnalyzePage() {
 
         setDocumentName(figmaFileName);
 
+        // workspace slug + 디렉토리 결정
+        const slug = deriveWorkspaceSlug({
+          sourceType: "figma",
+          url: workflow.url,
+          documentName: figmaFileName,
+          fileKey,
+        });
+        const workspaceDir = await ensureWorkspaceDir(outputRoot, slug);
+        setWorkspaceSlug(slug);
+        setWorkspaceDir(workspaceDir);
+
+        console.log(`[AnalyzePage] Figma workspace: ${workspaceDir}`);
+
         const sortedNodes = sortSitemapAsc(sitemapNodes);
         console.log(`[AnalyzePage] Tree built: ${sortedNodes.length} top-level sections (sorted asc)`);
         sortedNodes.forEach(s => {
@@ -411,6 +481,21 @@ export default function AnalyzePage() {
         setSitemap(sortedNodes);
         setSitemapData(sortedNodes);
         setCheckedIds(new Set(sortedNodes.map((n) => n.id)));
+
+        // _meta.json 초기 저장 (sitemap 캐시 포함)
+        const existingMeta = await readWorkspaceMeta(workspaceDir);
+        const newMeta: WorkspaceMeta = {
+          version: 1,
+          sourceUrl: workflow.url,
+          sourceType: "figma",
+          documentName: figmaFileName,
+          fileKey,
+          sections: existingMeta?.sections ?? [],
+          sitemap: sortedNodes,
+          createdAt: existingMeta?.createdAt ?? new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await writeWorkspaceMeta(workspaceDir, newMeta);
       } else {
         throw new Error(`지원하지 않는 소스 타입입니다: ${workflow.sourceType}`);
       }

@@ -39,6 +39,10 @@ export interface WorkflowState {
   pages: PageEntry[];
   currentPhase: WorkflowPhase;
   error: string | null;
+  // workspace 정보
+  workspaceDir: string;
+  workspaceSlug: string;
+  fileKey: string;
 }
 
 interface WorkflowContextValue {
@@ -56,6 +60,10 @@ interface WorkflowContextValue {
   setPhase: (phase: WorkflowPhase) => void;
   setError: (error: string | null) => void;
   reset: () => void;
+  // workspace 정보 setter
+  setWorkspaceDir: (dir: string) => void;
+  setWorkspaceSlug: (slug: string) => void;
+  setFileKey: (fileKey: string) => void;
 }
 
 const defaultState: WorkflowState = {
@@ -68,6 +76,9 @@ const defaultState: WorkflowState = {
   pages: [],
   currentPhase: "idle",
   error: null,
+  workspaceDir: "",
+  workspaceSlug: "",
+  fileKey: "",
 };
 
 const WorkflowContext = createContext<WorkflowContextValue>({
@@ -85,6 +96,9 @@ const WorkflowContext = createContext<WorkflowContextValue>({
   setPhase: () => {},
   setError: () => {},
   reset: () => {},
+  setWorkspaceDir: () => {},
+  setWorkspaceSlug: () => {},
+  setFileKey: () => {},
 });
 
 export function WorkflowProvider({ children }: { children: ReactNode }) {
@@ -164,6 +178,18 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     setWorkflow(defaultState);
   }, []);
 
+  const setWorkspaceDir = useCallback((workspaceDir: string) => {
+    setWorkflow((prev) => ({ ...prev, workspaceDir }));
+  }, []);
+
+  const setWorkspaceSlug = useCallback((workspaceSlug: string) => {
+    setWorkflow((prev) => ({ ...prev, workspaceSlug }));
+  }, []);
+
+  const setFileKey = useCallback((fileKey: string) => {
+    setWorkflow((prev) => ({ ...prev, fileKey }));
+  }, []);
+
   // useMemo로 context value 메모이제이션 — 불필요한 리렌더 방지
   const value = useMemo<WorkflowContextValue>(
     () => ({
@@ -181,8 +207,11 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setPhase,
       setError,
       reset,
+      setWorkspaceDir,
+      setWorkspaceSlug,
+      setFileKey,
     }),
-    [workflow, setUrl, setOutputDir, setSourceType, setDocumentName, setSitemap, setPages, updatePageStatus, updatePageSubstatus, updatePageSelected, setAllPagesSelected, setPhase, setError, reset]
+    [workflow, setUrl, setOutputDir, setSourceType, setDocumentName, setSitemap, setPages, updatePageStatus, updatePageSubstatus, updatePageSelected, setAllPagesSelected, setPhase, setError, reset, setWorkspaceDir, setWorkspaceSlug, setFileKey]
   );
 
   return (
