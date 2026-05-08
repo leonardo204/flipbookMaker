@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -153,6 +153,9 @@ interface SettingsPageProps {
 
 export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = {}) {
   const navigate = useNavigate();
+  const location = useLocation();
+  // 진입 시 전달된 from으로 복귀. 없으면 home(/) — 메뉴(Cmd+,)에서 진입한 경우 등
+  const returnPath = (location.state as { from?: string } | null)?.from || "/";
   const { settings, updateSettings } = useSettings();
 
   // Claude Code (로컬 UI 상태)
@@ -355,7 +358,7 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
         <div style={styles.topBar}>
           <button
             style={styles.backButton}
-            onClick={() => navigate("/")}
+            onClick={() => navigate(returnPath)}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = "var(--color-text)";
               e.currentTarget.style.backgroundColor = "var(--color-surface)";

@@ -336,7 +336,13 @@ export default function UploadPage() {
             입력하고 연결 테스트를 완료해주세요.
           </StatusCard>
           <div style={styles.actions}>
-            <Button onClick={() => navigate("/settings")}>설정으로 이동</Button>
+            <Button
+              onClick={() =>
+                navigate("/settings", { state: { from: "/upload" } })
+              }
+            >
+              설정으로 이동
+            </Button>
           </div>
         </div>
       </div>

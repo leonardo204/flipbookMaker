@@ -95,13 +95,13 @@ export default function InputPage() {
 
     if (!settings.outputPath) {
       setValidationError("결과 폴더를 먼저 설정해주세요.");
-      setTimeout(() => navigate("/settings"), 1500);
+      setTimeout(() => navigate("/settings", { state: { from: "/" } }), 1500);
       return;
     }
 
     if (!settings.claudeVerified) {
       setValidationError("Claude Code 연결을 먼저 확인해주세요.");
-      setTimeout(() => navigate("/settings"), 1500);
+      setTimeout(() => navigate("/settings", { state: { from: "/" } }), 1500);
       return;
     }
 
@@ -110,7 +110,7 @@ export default function InputPage() {
     if (trimmedUrl.includes("figma.com")) {
       if (!settings.figmaToken) {
         setValidationError("Figma Personal Access Token이 없습니다. 설정 페이지에서 먼저 등록해주세요.");
-        setTimeout(() => navigate("/settings"), 1500);
+        setTimeout(() => navigate("/settings", { state: { from: "/" } }), 1500);
         return;
       }
       setSourceType("figma");
@@ -135,7 +135,7 @@ export default function InputPage() {
       <button
         style={styles.settingsButton}
         title="설정"
-        onClick={() => navigate("/settings")}
+        onClick={() => navigate("/settings", { state: { from: "/" } })}
         onMouseEnter={(e) => {
           e.currentTarget.style.color = "var(--color-text)";
           e.currentTarget.style.backgroundColor = "var(--color-surface)";
