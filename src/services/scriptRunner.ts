@@ -104,7 +104,15 @@ async function runScript(
       },
     );
     if (result.exit_code !== 0) {
-      const stderrSnippet = result.stderr.trim().slice(-500);
+      // stderr 길이 길면 시작 1000자 + 끝 1500자 (총 ~2500자)로 양쪽 보존
+      const trimmed = result.stderr.trim();
+      let stderrSnippet = trimmed;
+      if (trimmed.length > 2500) {
+        stderrSnippet =
+          trimmed.slice(0, 1000) +
+          `\n\n... (${trimmed.length - 2500}자 생략) ...\n\n` +
+          trimmed.slice(-1500);
+      }
       throw new Error(
         `스크립트 실패 (exit ${result.exit_code})${stderrSnippet ? `\n${stderrSnippet}` : ""}`,
       );
