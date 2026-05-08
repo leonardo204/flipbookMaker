@@ -1,4 +1,5 @@
 import { Command } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface ProgressEvent {
   event: string;
@@ -13,16 +14,30 @@ export interface ProgressEvent {
 export type ProgressCallback = (event: ProgressEvent) => void;
 
 /**
- * Node.js 설치 여부 확인
+ * Node.js 설치 여부 확인.
+ *
+ * macOS GUI 앱은 사용자 shell PATH(nvm/homebrew/volta)를 못 받으므로 Rust 측에 위임.
+ * Rust는 ~/.nvm, /opt/homebrew, /usr/local 등 흔한 위치를 직접 검색.
  */
-export async function checkNodeAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
+export async function checkNodeAvailable(): Promise<{
+  available: boolean;
+  version?: string;
+  path?: string;
+  error?: string;
+}> {
   try {
-    const cmd = Command.create("node", ["--version"]);
-    const output = await cmd.execute();
-    if (output.code === 0) {
-      return { available: true, version: output.stdout.trim() };
-    }
-    return { available: false, error: `exit code ${output.code}` };
+    const result = await invoke<{
+      available: boolean;
+      path: string | null;
+      version: string | null;
+      error: string | null;
+    }>("test_node_available");
+    return {
+      available: result.available,
+      version: result.version ?? undefined,
+      path: result.path ?? undefined,
+      error: result.error ?? undefined,
+    };
   } catch (err) {
     return { available: false, error: String(err) };
   }

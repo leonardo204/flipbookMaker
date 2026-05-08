@@ -100,6 +100,88 @@ fn expand_tilde(input: &str) -> String {
     input.to_string()
 }
 
+/// Node.js 실행 파일 후보 경로 (claude_path 검색 패턴 차용).
+/// macOS GUI 앱은 사용자 shell PATH(nvm/homebrew)를 못 받으므로 흔한 위치를 직접 검색.
+fn default_node_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        // nvm
+        let nvm_root = format!("{}/.nvm/versions/node", home);
+        if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+            let mut versions: Vec<_> = entries.flatten().collect();
+            versions.sort_by_key(|e| e.file_name());
+            for entry in versions.into_iter().rev() {
+                let p = entry.path().join("bin/node");
+                if p.exists() {
+                    if let Some(s) = p.to_str() {
+                        candidates.push(s.to_string());
+                    }
+                }
+            }
+        }
+
+        // volta
+        let volta_path = format!("{}/.volta/bin/node", home);
+        if std::path::Path::new(&volta_path).exists() {
+            candidates.push(volta_path);
+        }
+
+        // fnm
+        let fnm_root = format!("{}/.fnm/aliases/default/bin/node", home);
+        if std::path::Path::new(&fnm_root).exists() {
+            candidates.push(fnm_root);
+        }
+    }
+
+    // homebrew (Apple Silicon)
+    candidates.push("/opt/homebrew/bin/node".to_string());
+    // homebrew (Intel)
+    candidates.push("/usr/local/bin/node".to_string());
+    // 시스템
+    candidates.push("/usr/bin/node".to_string());
+    // 최후 — PATH
+    candidates.push("node".to_string());
+
+    candidates
+}
+
+#[derive(Serialize)]
+struct NodeTestResult {
+    available: bool,
+    path: Option<String>,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn test_node_available() -> NodeTestResult {
+    for path in default_node_candidates() {
+        if let Ok(output) = std::process::Command::new(&path).arg("--version").output() {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                eprintln!("[test_node_available] found: {} ({})", path, version);
+                return NodeTestResult {
+                    available: true,
+                    path: Some(path),
+                    version: Some(version),
+                    error: None,
+                };
+            }
+        }
+    }
+
+    NodeTestResult {
+        available: false,
+        path: None,
+        version: None,
+        error: Some(
+            "Node.js를 찾을 수 없습니다. nvm/homebrew/volta로 설치 후 앱을 재시작하세요."
+                .to_string(),
+        ),
+    }
+}
+
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let expanded = expand_tilde(&path);
@@ -800,7 +882,8 @@ pub fn run() {
             resolve_parent_page_id,
             figma_api_proxy,
             claude_print,
-            download_to_file
+            download_to_file,
+            test_node_available
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
