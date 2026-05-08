@@ -1,5 +1,6 @@
-import { Command } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { resolveResource } from "@tauri-apps/api/path";
 
 export interface ProgressEvent {
   event: string;
@@ -44,108 +45,99 @@ export async function checkNodeAvailable(): Promise<{
 }
 
 /**
- * Playwright 설치 여부 확인
+ * Playwright 글로벌 설치 여부 확인 — Rust 측에 위임 (npm root -g 후 playwright/package.json 검사).
  */
-export async function checkPlaywrightAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
+export async function checkPlaywrightAvailable(): Promise<{
+  available: boolean;
+  version?: string;
+  modulePath?: string;
+  npmGlobalRoot?: string;
+  error?: string;
+}> {
   try {
-    const cmd = Command.create("node", [
-      "-e",
-      "const p = require('playwright'); console.log(require('playwright/package.json').version);",
-    ]);
-    const output = await cmd.execute();
-    if (output.code === 0) {
-      return { available: true, version: output.stdout.trim() };
-    }
-    return { available: false, error: output.stderr.trim() || `exit code ${output.code}` };
+    const result = await invoke<{
+      available: boolean;
+      version: string | null;
+      module_path: string | null;
+      npm_global_root: string | null;
+      error: string | null;
+    }>("test_playwright_available");
+    return {
+      available: result.available,
+      version: result.version ?? undefined,
+      modulePath: result.module_path ?? undefined,
+      npmGlobalRoot: result.npm_global_root ?? undefined,
+      error: result.error ?? undefined,
+    };
   } catch (err) {
     return { available: false, error: String(err) };
   }
 }
 
 /**
- * 스크립트 실행 핵심 래퍼.
- * stdout에서 JSON 라인을 파싱하여 onProgress 콜백을 호출한다.
- * stderr는 로그용으로 수집한다.
+ * Node.js 스크립트 실행 — Rust spawn 위임 + 'node-progress' 이벤트 listen.
+ * Tauri shell의 PATH 한계 회피.
  */
-export async function runScript(
+async function runScript(
   scriptPath: string,
   args: string[],
-  onProgress?: ProgressCallback
+  env: Record<string, string>,
+  onProgress?: ProgressCallback,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const cmd = Command.create("node", [scriptPath, ...args]);
-
-    let stdoutBuffer = "";
-    const stderrLines: string[] = [];
-
-    cmd.stdout.on("data", (chunk: string) => {
-      stdoutBuffer += chunk;
-      // 줄 단위로 분리하여 JSON 파싱
-      const lines = stdoutBuffer.split("\n");
-      // 마지막 불완전한 줄은 버퍼에 보관
-      stdoutBuffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const parsed = JSON.parse(trimmed) as ProgressEvent;
-          onProgress?.(parsed);
-        } catch {
-          // JSON이 아닌 stdout 라인은 무시
-        }
-      }
-    });
-
-    cmd.stderr.on("data", (chunk: string) => {
-      stderrLines.push(chunk);
-    });
-
-    cmd.on("close", (data: { code: number | null; signal: number | null }) => {
-      // 버퍼에 남은 데이터 처리
-      if (stdoutBuffer.trim()) {
-        try {
-          const parsed = JSON.parse(stdoutBuffer.trim()) as ProgressEvent;
-          onProgress?.(parsed);
-        } catch {
-          // 무시
-        }
-      }
-
-      if (data.code === 0 || data.code === null) {
-        resolve();
-      } else {
-        const stderrText = stderrLines.join("");
-        reject(
-          new Error(
-            `Script exited with code ${data.code}.\nstderr: ${stderrText}`
-          )
-        );
-      }
-    });
-
-    cmd.on("error", (err: string) => {
-      reject(new Error(`Failed to spawn script: ${err}`));
-    });
-
-    cmd.spawn().catch((err: unknown) => {
-      reject(new Error(`Failed to spawn: ${String(err)}`));
-    });
+  const unlisten = await listen<string>("node-progress", (event) => {
+    const line = event.payload;
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const parsed = JSON.parse(trimmed) as ProgressEvent;
+      onProgress?.(parsed);
+    } catch {
+      // JSON 아닌 라인은 무시 (디버그 로그 등)
+    }
   });
+
+  try {
+    const exitCode = await invoke<number>("run_node_script", {
+      request: { script_path: scriptPath, args, env },
+    });
+    if (exitCode !== 0) {
+      throw new Error(`Script exited with code ${exitCode}`);
+    }
+  } finally {
+    unlisten();
+  }
 }
 
 /**
  * crawl.mjs 실행 — Axure Share URL에서 sitemap을 크롤링한다.
+ *
+ * release .app은 자체 node_modules 없음 → 사용자 글로벌 npm install 필요.
+ * Playwright 모듈 경로를 PLAYWRIGHT_MODULE_PATH 환경변수로 crawl.mjs에 전달.
  */
 export async function runCrawl(
   url: string,
   outputDir: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
 ): Promise<void> {
-  return runScript(
-    "../scripts/crawl.mjs",
-    ["--url", url, "--output", outputDir],
-    onProgress
-  );
+  // 1. .app 안 scripts 디렉토리 절대 경로 해석
+  // release: .app/Contents/Resources/_up_/scripts/crawl.mjs
+  // dev: 프로젝트 source 경로
+  let scriptPath: string;
+  try {
+    scriptPath = await resolveResource("scripts/crawl.mjs");
+  } catch (e) {
+    throw new Error(
+      `crawl.mjs 경로를 찾을 수 없습니다: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  // 2. Playwright 글로벌 위치 확인 + 환경변수로 전달
+  const pwResult = await checkPlaywrightAvailable();
+  const env: Record<string, string> = {};
+  if (pwResult.available && pwResult.modulePath) {
+    env["PLAYWRIGHT_MODULE_PATH"] = pwResult.modulePath;
+  }
+
+  return runScript(scriptPath, ["--url", url, "--output", outputDir], env, onProgress);
 }
 

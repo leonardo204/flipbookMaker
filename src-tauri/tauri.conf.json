@@ -31,6 +31,7 @@
     "active": true,
     "targets": ["dmg", "app"],
     "createUpdaterArtifacts": true,
+    "resources": ["../scripts/crawl.mjs", "../scripts/lib"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

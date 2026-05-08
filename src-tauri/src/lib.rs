@@ -182,6 +182,175 @@ fn test_node_available() -> NodeTestResult {
     }
 }
 
+/// node 절대 경로를 찾아 반환 (default_node_candidates 첫 성공).
+fn resolve_node_path() -> Option<String> {
+    for path in default_node_candidates() {
+        if let Ok(output) = std::process::Command::new(&path).arg("--version").output() {
+            if output.status.success() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// node 옆 디렉토리의 npm을 찾아 `npm root -g` 호출 → 글로벌 npm 모듈 디렉토리 반환.
+fn resolve_npm_global_root(node_path: &str) -> Option<String> {
+    // node 옆에 npm 있음 (보통 같은 bin 디렉토리)
+    let node_dir = std::path::Path::new(node_path).parent()?;
+    let npm_path = node_dir.join("npm");
+    let npm_str = if npm_path.exists() {
+        npm_path.to_string_lossy().to_string()
+    } else {
+        "npm".to_string()
+    };
+
+    let output = std::process::Command::new(&npm_str)
+        .args(["root", "-g"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+#[derive(Serialize)]
+struct PlaywrightTestResult {
+    available: bool,
+    version: Option<String>,
+    module_path: Option<String>,
+    npm_global_root: Option<String>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn test_playwright_available() -> PlaywrightTestResult {
+    let node = match resolve_node_path() {
+        Some(p) => p,
+        None => {
+            return PlaywrightTestResult {
+                available: false,
+                version: None,
+                module_path: None,
+                npm_global_root: None,
+                error: Some("Node.js를 찾을 수 없습니다. 먼저 Node.js를 설치하세요.".to_string()),
+            };
+        }
+    };
+
+    let npm_root = resolve_npm_global_root(&node);
+    let playwright_dir = npm_root
+        .as_ref()
+        .map(|r| format!("{}/playwright", r))
+        .filter(|p| std::path::Path::new(p).exists());
+
+    // 글로벌 위치에 playwright 디렉토리 있으면 그 package.json에서 version 읽기
+    if let Some(ref pw_dir) = playwright_dir {
+        let pkg_json = format!("{}/package.json", pw_dir);
+        if let Ok(content) = std::fs::read_to_string(&pkg_json) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+                let version = parsed["version"].as_str().map(|s| s.to_string());
+                eprintln!(
+                    "[test_playwright_available] found: {} ({})",
+                    pw_dir,
+                    version.as_deref().unwrap_or("?")
+                );
+                return PlaywrightTestResult {
+                    available: true,
+                    version,
+                    module_path: Some(pw_dir.clone()),
+                    npm_global_root: npm_root,
+                    error: None,
+                };
+            }
+        }
+    }
+
+    PlaywrightTestResult {
+        available: false,
+        version: None,
+        module_path: None,
+        npm_global_root: npm_root,
+        error: Some(
+            "Playwright가 글로벌 npm 모듈에 없습니다. 'npm install -g playwright' 후 'npx playwright install chromium' 실행이 필요합니다.".to_string(),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct RunNodeScriptRequest {
+    script_path: String,
+    args: Vec<String>,
+    /// 추가 환경변수 (PLAYWRIGHT_MODULE_PATH 등)
+    #[serde(default)]
+    env: std::collections::HashMap<String, String>,
+}
+
+/// Node.js 스크립트를 spawn하고 stdout 라인을 'node-progress' 이벤트로 emit.
+/// 종료 코드를 반환.
+#[tauri::command]
+async fn run_node_script(
+    app: tauri::AppHandle,
+    request: RunNodeScriptRequest,
+) -> Result<i32, String> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+    use tauri::Emitter;
+
+    let node = resolve_node_path()
+        .ok_or_else(|| "Node.js를 찾을 수 없습니다.".to_string())?;
+
+    eprintln!(
+        "[run_node_script] node={} script={} args={:?}",
+        node, request.script_path, request.args
+    );
+
+    let mut cmd = TokioCommand::new(&node);
+    cmd.arg(&request.script_path)
+        .args(&request.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // 추가 환경변수 주입
+    for (k, v) in &request.env {
+        cmd.env(k, v);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn 실패: {} (node={})", e, node))?;
+
+    let stdout = child.stdout.take().ok_or("stdout 핸들 없음")?;
+    let stderr = child.stderr.take().ok_or("stderr 핸들 없음")?;
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let _ = app_clone.emit("node-progress", &line);
+        }
+    });
+
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            eprintln!("[node stderr] {}", line);
+        }
+    });
+
+    let status = child.wait().await.map_err(|e| format!("wait 실패: {}", e))?;
+    let code = status.code().unwrap_or(-1);
+    eprintln!("[run_node_script] exit code: {}", code);
+    Ok(code)
+}
+
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let expanded = expand_tilde(&path);
@@ -883,7 +1052,9 @@ pub fn run() {
             figma_api_proxy,
             claude_print,
             download_to_file,
-            test_node_available
+            test_node_available,
+            test_playwright_available,
+            run_node_script
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

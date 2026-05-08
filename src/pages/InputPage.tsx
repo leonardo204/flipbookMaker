@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSettings } from "../contexts/SettingsContext";
 import { useWorkflow, type PageEntry } from "../contexts/WorkflowContext";
-import { checkNodeAvailable } from "../services/scriptRunner";
+import { checkNodeAvailable, checkPlaywrightAvailable } from "../services/scriptRunner";
+import PlaywrightSetupModal from "../components/PlaywrightSetupModal";
 import {
   findExistingWorkspace,
   listWorkspaces,
@@ -307,6 +308,14 @@ export default function InputPage() {
   const [validationError, setValidationError] = useState<string | null>(null);
   const [nodeAvailable, setNodeAvailable] = useState<boolean | null>(null);
 
+  // Playwright 미설치 시 노출되는 모달
+  const [playwrightModalVisible, setPlaywrightModalVisible] = useState(false);
+  const [playwrightModalInfo, setPlaywrightModalInfo] = useState<{
+    npmGlobalRoot?: string;
+    error?: string;
+  }>({});
+  const [pendingAxshareUrl, setPendingAxshareUrl] = useState<string | null>(null);
+
   // WorkspacePickerModal 상태
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerExisting, setPickerExisting] = useState<{
@@ -372,6 +381,17 @@ export default function InputPage() {
       detectedType = "figma";
     } else if (trimmedUrl.includes("axshare.com")) {
       detectedType = "axshare";
+      // Axshare는 Playwright 의존 — 글로벌 npm에 설치되어 있는지 사전 확인
+      const pwResult = await checkPlaywrightAvailable();
+      if (!pwResult.available) {
+        setPlaywrightModalInfo({
+          npmGlobalRoot: pwResult.npmGlobalRoot,
+          error: pwResult.error,
+        });
+        setPendingAxshareUrl(trimmedUrl);
+        setPlaywrightModalVisible(true);
+        return;
+      }
     } else {
       setValidationError("Figma 또는 Axure Share URL을 입력해주세요.");
       return;
@@ -396,6 +416,27 @@ export default function InputPage() {
 
     // 신규 — 바로 분석 시작
     doNavigateAnalyze(trimmedUrl, detectedType);
+  };
+
+  /** Playwright 모달의 [다시 확인] — 사용자가 설치 후 재검증. 통과 시 axshare 분석 자동 재진입 */
+  const handlePlaywrightRecheck = async () => {
+    const pwResult = await checkPlaywrightAvailable();
+    if (pwResult.available && pendingAxshareUrl) {
+      setPlaywrightModalVisible(false);
+      const target = pendingAxshareUrl;
+      setPendingAxshareUrl(null);
+      setPlaywrightModalInfo({});
+      // 같은 URL로 다시 handleAnalyze 흐름 진입 (workspace 검색부터)
+      setUrl(target);
+      // 모달 닫힌 후 한 박자 뒤 재호출 (state 반영)
+      setTimeout(() => handleAnalyze(), 50);
+    } else {
+      // 여전히 미설치 — 모달 유지하고 메시지만 갱신
+      setPlaywrightModalInfo({
+        npmGlobalRoot: pwResult.npmGlobalRoot,
+        error: pwResult.error,
+      });
+    }
   };
 
   /** workspace 없음 또는 신규 분석 — WorkflowContext 세팅 후 AnalyzePage로 이동 */
@@ -541,6 +582,20 @@ export default function InputPage() {
           onReuse={handleReuse}
           onFreshAnalyze={handleFreshAnalyze}
           onCancel={() => setPickerVisible(false)}
+        />
+      )}
+
+      {/* PlaywrightSetupModal — axshare URL 입력 시 미설치 발견되면 노출 */}
+      {playwrightModalVisible && (
+        <PlaywrightSetupModal
+          npmGlobalRoot={playwrightModalInfo.npmGlobalRoot}
+          errorMessage={playwrightModalInfo.error}
+          onRecheck={handlePlaywrightRecheck}
+          onCancel={() => {
+            setPlaywrightModalVisible(false);
+            setPendingAxshareUrl(null);
+            setPlaywrightModalInfo({});
+          }}
         />
       )}
 
