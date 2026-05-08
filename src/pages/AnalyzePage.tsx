@@ -46,6 +46,26 @@ function extractNodeId(url: string): string | null {
 
 
 /**
+ * Axshare sitemap은 [Folder { children: [Wireframe, Wireframe, ...] }] 구조.
+ * 각 Wireframe이 별도 페이지(섹션)이므로 Folder를 펼쳐 자식 Wireframe들을 최상위로 끌어올린다.
+ *
+ * - 단일 Folder 1개 + 자식 N개 → 자식 N개를 최상위로 (Folder 자체는 변환 단위 X)
+ * - 다중 Folder → 모든 Folder의 자식 Wireframe을 모아 평탄화
+ * - Folder 안에 또 Folder가 있으면 재귀
+ */
+function flattenAxshareSitemap(nodes: SitemapNode[]): SitemapNode[] {
+  const out: SitemapNode[] = [];
+  for (const n of nodes) {
+    if (n.type === "Folder" && n.children && n.children.length > 0) {
+      out.push(...flattenAxshareSitemap(n.children));
+    } else {
+      out.push(n);
+    }
+  }
+  return out;
+}
+
+/**
  * SitemapNode 트리를 pageName 기준 자연 정렬 (00, 01, 02, ...).
  * 최상위 + 모든 children에 재귀 적용.
  */
@@ -406,7 +426,9 @@ export default function AnalyzePage() {
 
         const raw = await readTextFile(resolvedSitemapPath);
         const parsed: SitemapNode[] = JSON.parse(raw);
-        const sorted = sortSitemapAsc(parsed);
+        // Axshare sitemap의 Folder 노드를 펼쳐 자식 Wireframe들을 최상위로 (각 페이지 = 변환 단위)
+        const flattened = flattenAxshareSitemap(parsed);
+        const sorted = sortSitemapAsc(flattened);
         setSitemap(sorted);
         setSitemapData(sorted);
         setCheckedIds(new Set(sorted.map((n) => n.id)));
