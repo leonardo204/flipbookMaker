@@ -444,6 +444,9 @@ export default function InputPage() {
     setSourceType(type);
     setWorkflowUrl(trimmedUrl);
     setOutputDir(settings.outputPath);
+    // 이전 분석/변환의 sitemap/pages를 명시적으로 비움 — AnalyzePage가 stale 데이터 재사용 방지
+    setSitemap([]);
+    setPages([]);
     navigate("/analyze");
   };
 

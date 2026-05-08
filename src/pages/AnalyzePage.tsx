@@ -339,10 +339,26 @@ export default function AnalyzePage() {
     if (started.current) return;
     started.current = true;
 
-    // 이미 sitemap이 있으면 (ConvertPage에서 돌아온 경우 등) 재호출 안 하고 복원만
-    // pages가 있으면 그 selected 상태로 checkedIds 복원
-    if (workflow.sitemap && workflow.sitemap.length > 0) {
-      console.log("[AnalyzePage] 기존 sitemap 재사용 — Figma API 재호출 생략");
+    // 이미 sitemap이 있고 + 현재 URL의 sitemap[0].url과 workflow.url이 일치하면 재사용
+    // (ConvertPage에서 돌아온 경우). URL이 바뀌었으면 stale → 재크롤.
+    const sitemapMatchesUrl = (() => {
+      if (!workflow.sitemap || workflow.sitemap.length === 0) return false;
+      // figma는 sitemapNode.url이 baseUrl로 채워져 있고, axshare는 wireframe url
+      // 두 케이스 모두 첫 노드의 url에 현재 workflow.url이 포함되어 있으면 매칭으로 간주
+      const firstUrl = workflow.sitemap[0]?.url ?? "";
+      if (!firstUrl) return false;
+      // figma: sitemap[i].url == workflow.url (baseUrl 통째)
+      // axshare: workflow.url의 origin이 firstUrl과 같은 사이트인지 확인
+      try {
+        const wfHost = new URL(workflow.url).hostname;
+        return firstUrl.includes(wfHost) || workflow.url.includes(firstUrl);
+      } catch {
+        return false;
+      }
+    })();
+
+    if (sitemapMatchesUrl) {
+      console.log("[AnalyzePage] 기존 sitemap 재사용 — 같은 URL 재진입");
       setSitemapData(workflow.sitemap);
       if (workflow.pages.length > 0) {
         // ConvertPage 체크박스 변경 사항을 그대로 반영

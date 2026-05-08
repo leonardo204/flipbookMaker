@@ -1,6 +1,6 @@
 [package]
 name = "flipmd"
-version = "1.3.5"
+version = "1.3.6"
 description = "FlipMD - Convert Figma/Axshare flipbooks to Markdown and upload to Confluence"
 authors = ["FlipMD Team"]
 edition = "2021"
