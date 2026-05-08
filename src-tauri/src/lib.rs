@@ -194,30 +194,58 @@ fn resolve_node_path() -> Option<String> {
     None
 }
 
-/// node 옆 디렉토리의 npm을 찾아 `npm root -g` 호출 → 글로벌 npm 모듈 디렉토리 반환.
-fn resolve_npm_global_root(node_path: &str) -> Option<String> {
-    // node 옆에 npm 있음 (보통 같은 bin 디렉토리)
-    let node_dir = std::path::Path::new(node_path).parent()?;
-    let npm_path = node_dir.join("npm");
-    let npm_str = if npm_path.exists() {
-        npm_path.to_string_lossy().to_string()
-    } else {
-        "npm".to_string()
-    };
+/// 글로벌 npm 모듈 디렉토리 후보들 — npm 호출 없이 직접 검색.
+/// macOS GUI 앱은 PATH가 비어있어 'npm root -g' 호출 자체가 실패할 수 있으므로
+/// 흔한 위치들을 직접 검사하는 방식이 더 견고.
+fn npm_global_root_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
 
-    let output = std::process::Command::new(&npm_str)
-        .args(["root", "-g"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    if let Ok(home) = std::env::var("HOME") {
+        // nvm — 가장 최신 버전부터
+        let nvm_root = format!("{}/.nvm/versions/node", home);
+        if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+            let mut versions: Vec<_> = entries.flatten().collect();
+            versions.sort_by_key(|e| e.file_name());
+            for entry in versions.into_iter().rev() {
+                let p = entry.path().join("lib/node_modules");
+                if let Some(s) = p.to_str() {
+                    candidates.push(s.to_string());
+                }
+            }
+        }
+        // npm-global (사용자 prefix 설정)
+        candidates.push(format!("{}/.npm-global/lib/node_modules", home));
+        candidates.push(format!("{}/.npm/lib/node_modules", home));
+        // volta
+        candidates.push(format!("{}/.volta/tools/image/packages", home));
     }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if root.is_empty() {
-        None
-    } else {
-        Some(root)
+
+    // homebrew (Apple Silicon)
+    candidates.push("/opt/homebrew/lib/node_modules".to_string());
+    // homebrew (Intel) / 시스템
+    candidates.push("/usr/local/lib/node_modules".to_string());
+
+    candidates
+}
+
+/// (호환성용) node 경로 기반 npm root 후보 — 첫 번째 존재 디렉토리만 반환.
+fn resolve_npm_global_root(_node_path: &str) -> Option<String> {
+    npm_global_root_candidates()
+        .into_iter()
+        .find(|p| std::path::Path::new(p).is_dir())
+}
+
+/// 글로벌 npm 모듈에서 playwright 디렉토리를 직접 검색.
+/// `npm root -g` 호출 없이 후보 위치를 순회해 playwright/package.json 존재 검사.
+fn find_playwright_module() -> Option<(String, String)> {
+    for root in npm_global_root_candidates() {
+        let pw_dir = format!("{}/playwright", root);
+        let pkg_json = format!("{}/package.json", pw_dir);
+        if std::path::Path::new(&pkg_json).exists() {
+            return Some((pw_dir, root));
+        }
     }
+    None
 }
 
 #[derive(Serialize)]
@@ -231,27 +259,8 @@ struct PlaywrightTestResult {
 
 #[tauri::command]
 fn test_playwright_available() -> PlaywrightTestResult {
-    let node = match resolve_node_path() {
-        Some(p) => p,
-        None => {
-            return PlaywrightTestResult {
-                available: false,
-                version: None,
-                module_path: None,
-                npm_global_root: None,
-                error: Some("Node.js를 찾을 수 없습니다. 먼저 Node.js를 설치하세요.".to_string()),
-            };
-        }
-    };
-
-    let npm_root = resolve_npm_global_root(&node);
-    let playwright_dir = npm_root
-        .as_ref()
-        .map(|r| format!("{}/playwright", r))
-        .filter(|p| std::path::Path::new(p).exists());
-
-    // 글로벌 위치에 playwright 디렉토리 있으면 그 package.json에서 version 읽기
-    if let Some(ref pw_dir) = playwright_dir {
+    // 흔한 글로벌 위치들 직접 검색 (npm root -g 호출 우회 — GUI PATH 한계 회피)
+    if let Some((pw_dir, npm_root)) = find_playwright_module() {
         let pkg_json = format!("{}/package.json", pw_dir);
         if let Ok(content) = std::fs::read_to_string(&pkg_json) {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -264,19 +273,26 @@ fn test_playwright_available() -> PlaywrightTestResult {
                 return PlaywrightTestResult {
                     available: true,
                     version,
-                    module_path: Some(pw_dir.clone()),
-                    npm_global_root: npm_root,
+                    module_path: Some(pw_dir),
+                    npm_global_root: Some(npm_root),
                     error: None,
                 };
             }
         }
     }
 
+    // 검색 실패 — fallback npm_root만 표시 (사용자에게 위치 힌트 제공)
+    let fallback_root = resolve_npm_global_root("");
+    eprintln!(
+        "[test_playwright_available] not found. checked candidates: {:?}",
+        npm_global_root_candidates()
+    );
+
     PlaywrightTestResult {
         available: false,
         version: None,
         module_path: None,
-        npm_global_root: npm_root,
+        npm_global_root: fallback_root,
         error: Some(
             "Playwright가 글로벌 npm 모듈에 없습니다. 'npm install -g playwright' 후 'npx playwright install chromium' 실행이 필요합니다.".to_string(),
         ),
