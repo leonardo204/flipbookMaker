@@ -57,13 +57,31 @@
 
 ### 핵심 규칙
 
+**일반**
 - GitHub push는 SSH URL만 사용 (`git@github.com:`)
 - Claude Code 필수 전제: 미설치 시 변환 버튼 비활성화
 - Confluence 인증: OS 자격증명 관리자 사용 (macOS Keychain / Windows Credential Manager)
-- Figma/Axshare URL 자동 감지 — 이미지 캡처 없이 텍스트+Mermaid만 사용
-- Figma API rate limit: Pro 15req/min, 429 시 자동 재시도 + 90초 카운트다운
 - `scripts/crawl.mjs`만 유지 (capture 스크립트 삭제됨)
+
+**Figma 변환 파이프라인**
+- Figma/Axshare URL 자동 감지 — Figma는 PAT(REST) + 프레임 PNG 렌더링
+- Figma 메타 API rate limit: Pro 15req/min, 토큰 버킷 12/min로 안전 마진. 429 시 자동 재시도 + 90초 카운트다운
+- Figma `/v1/images` rate limit: Pro 6req/min, 토큰 버킷 5/min. 32+ ID 한 번에 보내면 400 → `IMAGE_BATCH_MAX=10` 청크 분할 + 절반 재시도 fallback
+- 이미지 `scale=1` 고정 — Anthropic API 이미지 합산 한도(~20MB) 회피 (1920×1080 wireframe도 vision OCR 가능)
+- 프레임은 시각 순서(상→하, 좌→우, bbox 기반) 정렬해 LLM에 전달
+
+**Claude CLI 호출**
+- argv overflow 회피: Rust `claude_print` 명령이 stdin 기반으로 spawn (큰 프롬프트 안전)
+- 섹션마다 새 세션 — 컨텍스트/이미지 누적이 1M window 채우는 image_error 차단
+- 동적 timeout: 300s + 20s × image_count
+- 변환 전 기존 .md 사전 삭제 — Claude의 "이미 있어 유지" 판단 차단
+
+**프롬프트/출력 규칙**
+- 한국어 출력: 소제목/표 헤더 번역, 인용 블록은 원문 + `*(번역)*` 부기, 표 본문 셀 병기
+- 의미 그룹 H2 — 프레임 1대1 매핑 금지, 6~8개 기능 그룹으로 통합 + 부록 화면 인덱스 표
+- Mermaid 작성 규칙 (Confluence 호환): 노드 라벨 안 괄호 금지, `<br>` 사용, 숫자 리스트 금지 → [컨벤션](Ref-docs/claude/conventions.md)
+- 절대 금지: hallucination, 이모지, raw 노드 ID 본문 노출, 메타 누설(visible=false 등)
 
 ---
 
-*최종 업데이트: 2026-05-07 (목적/목표 명시)*
+*최종 업데이트: 2026-05-08 (Figma vision 파이프라인 + 의미 그룹 변환 규칙 반영)*
