@@ -123,6 +123,24 @@ do_build() {
         ok "DMG 수동 생성 완료"
     fi
 
+    # DMG notarize + staple (Tauri는 .app만 notarize함 — DMG에도 ticket 첨부해야 spctl 통과)
+    if [ -f "$dmg_file" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+        info "DMG notarize + staple 중..."
+        if xcrun stapler validate "$dmg_file" >/dev/null 2>&1; then
+            ok "DMG 이미 stapled 상태"
+        else
+            xcrun notarytool submit "$dmg_file" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait | tail -5
+            xcrun stapler staple "$dmg_file" || warn "DMG staple 실패 (notarize 자체는 OK일 수 있음)"
+            ok "DMG notarize + staple 완료"
+        fi
+    else
+        warn "DMG notarize 스킵 — APPLE_ID/PASSWORD/TEAM_ID 환경변수 확인"
+    fi
+
     info "=== 빌드 산출물 (macOS) ==="
     ok "Updater 번들: $APP_TAR ($(du -h "$APP_TAR" | cut -f1))"
     ok "서명 파일: $APP_SIG"
