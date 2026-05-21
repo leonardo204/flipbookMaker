@@ -7,6 +7,7 @@ interface TextInputProps {
   label?: string;
   type?: string;
   onEnter?: () => void;
+  disabled?: boolean;
 }
 
 export default function TextInput({
@@ -16,6 +17,7 @@ export default function TextInput({
   label,
   type = "text",
   onEnter,
+  disabled = false,
 }: TextInputProps) {
   const containerStyle: React.CSSProperties = {
     display: "flex",
@@ -52,11 +54,17 @@ export default function TextInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        style={inputStyle}
+        disabled={disabled}
+        style={{
+          ...inputStyle,
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? "not-allowed" : "text",
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && onEnter) onEnter();
         }}
         onFocus={(e) => {
+          if (disabled) return;
           e.currentTarget.style.borderColor = "var(--color-accent)";
           e.currentTarget.style.boxShadow = "0 0 0 2px var(--color-accent-subtle)";
         }}

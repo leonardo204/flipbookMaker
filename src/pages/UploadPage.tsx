@@ -23,6 +23,36 @@ type PageUploadStatus = "waiting" | "uploading" | "success" | "error";
 // parentPageUrl 확인 상태
 type ParentPageStatus = "idle" | "resolving" | "resolved" | "error";
 
+// Children page 제목 정책 — Confluence는 Space 내 제목이 고유해야 함
+// auto: 오늘 날짜를 Suffix로 자동 추가 / prefix·suffix: 사용자 입력값 사용
+type TitlePolicyMode = "auto" | "prefix" | "suffix";
+
+const todayYmd = (): string => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const applyTitlePolicy = (
+  name: string,
+  mode: TitlePolicyMode,
+  prefixText: string,
+  suffixText: string,
+): string => {
+  if (mode === "auto") return `${name} (${todayYmd()})`;
+  if (mode === "prefix") {
+    const v = prefixText.trim();
+    return v ? `${v} ${name}` : name;
+  }
+  if (mode === "suffix") {
+    const v = suffixText.trim();
+    return v ? `${name} ${v}` : name;
+  }
+  return name;
+};
+
 interface PageUploadEntry {
   name: string;
   path: string;
@@ -174,6 +204,62 @@ const styles = {
             ? "var(--color-warning)"
             : "var(--color-text-secondary)",
   }),
+  policyHelp: {
+    fontSize: "12px",
+    color: "var(--color-text-secondary)",
+    lineHeight: 1.55,
+  },
+  radioRow: {
+    display: "flex",
+    gap: "10px",
+    marginTop: "4px",
+  },
+  radioCard: (selected: boolean): React.CSSProperties => ({
+    flex: 1,
+    border: `1px solid ${selected ? "var(--color-accent)" : "var(--color-border)"}`,
+    backgroundColor: selected
+      ? "rgba(99, 102, 241, 0.10)"
+      : "var(--color-bg)",
+    borderRadius: "var(--radius-sm)",
+    padding: "10px 12px",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "8px",
+    transition: "border-color .12s, background-color .12s",
+  }),
+  radioLabel: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--color-text)",
+  },
+  radioDesc: {
+    fontSize: "11px",
+    color: "var(--color-text-secondary)",
+    marginTop: "2px",
+    lineHeight: 1.4,
+  },
+  policyInfo: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    backgroundColor: "var(--color-bg)",
+    border: "1px solid var(--color-border)",
+    borderRadius: "var(--radius-sm)",
+    fontSize: "13px",
+    color: "var(--color-text)",
+    lineHeight: 1.5,
+  },
+  policyInfoAccent: {
+    color: "var(--color-accent)",
+    fontWeight: 600,
+  },
+  policyError: {
+    fontSize: "12px",
+    color: "var(--color-error)",
+    marginTop: "4px",
+  },
 };
 
 const PAGE_STATUS_LABELS: Record<PageUploadStatus, string> = {
@@ -209,6 +295,11 @@ export default function UploadPage() {
   const [parentPageId, setParentPageId] = useState<string | null>(null);
   const [parentSpaceKey, setParentSpaceKey] = useState<string | null>(null);
   const [parentResolveError, setParentResolveError] = useState<string | null>(null);
+
+  // Children page 제목 정책 — Confluence Space 내 제목 중복 방지용
+  const [titleMode, setTitleMode] = useState<TitlePolicyMode>("auto");
+  const [titlePrefix, setTitlePrefix] = useState("");
+  const [titleSuffix, setTitleSuffix] = useState("");
 
   // 설정 미완료 여부
   const settingsIncomplete = !settings.confluenceVerified;
@@ -369,11 +460,17 @@ export default function UploadPage() {
       setUploadDone(false);
       if (!resume) setUploadProgress(0);
 
-      const mdFiles = await collectMdFiles();
-      if (mdFiles.length === 0) {
+      const rawFiles = await collectMdFiles();
+      if (rawFiles.length === 0) {
         setGlobalError("업로드할 Markdown 파일을 찾을 수 없습니다.");
         return;
       }
+
+      // 제목 정책 적용 — Confluence Space 내 제목 중복 방지
+      const mdFiles = rawFiles.map((f) => ({
+        ...f,
+        title: applyTitlePolicy(f.title, titleMode, titlePrefix, titleSuffix),
+      }));
 
       // resume=true면 기존 pageEntries의 success를 보존, error/waiting/uploading은 waiting으로 리셋
       // resume=false면 전부 waiting으로 초기화
@@ -481,7 +578,7 @@ export default function UploadPage() {
         setUploading(false);
       }
     },
-    [settings, collectMdFiles, parentPageId, parentSpaceKey, pageEntries],
+    [settings, collectMdFiles, parentPageId, parentSpaceKey, pageEntries, titleMode, titlePrefix, titleSuffix],
   );
 
   const handleUpload = useCallback(() => runUpload(false), [runUpload]);
@@ -570,8 +667,19 @@ export default function UploadPage() {
   const successCount = pageEntries.filter((e) => e.status === "success").length;
   const failCount = pageEntries.filter((e) => e.status === "error").length;
 
-  // 업로드 버튼 활성 조건: parentPageStatus가 resolved(빈값 포함) 이어야 함
-  const uploadEnabled = parentPageStatus === "resolved" && !uploading && !uploadDone && collectedFiles.length > 0;
+  // 제목 정책 유효성: prefix/suffix 모드는 입력값 필수
+  const titlePolicyValid =
+    titleMode === "auto" ||
+    (titleMode === "prefix" && titlePrefix.trim().length > 0) ||
+    (titleMode === "suffix" && titleSuffix.trim().length > 0);
+
+  // 업로드 버튼 활성 조건: parentPageStatus가 resolved + 제목 정책 유효
+  const uploadEnabled =
+    parentPageStatus === "resolved" &&
+    titlePolicyValid &&
+    !uploading &&
+    !uploadDone &&
+    collectedFiles.length > 0;
 
   return (
     <div style={styles.page}>
@@ -655,6 +763,89 @@ export default function UploadPage() {
           )}
         </div>
 
+        {/* Children Page 제목 정책 — Space 내 제목 중복 방지 */}
+        <div style={styles.section}>
+          <span style={styles.sectionTitle}>Children Page 제목 정책</span>
+          <p style={styles.policyHelp}>
+            Confluence는 같은 Space 내에서 페이지 제목이 <strong>고유</strong>해야 합니다.
+            플립북 특성상 같은 children page name이 중복될 수 있어, 구분 문자열을 자동/수동으로 붙입니다.
+          </p>
+
+          <div style={styles.radioRow}>
+            {(
+              [
+                { mode: "auto" as const, label: "Auto", desc: "오늘 날짜를 Suffix로 자동 추가" },
+                { mode: "prefix" as const, label: "Prefix", desc: "제목 앞에 문자열 추가" },
+                { mode: "suffix" as const, label: "Suffix", desc: "제목 뒤에 문자열 추가" },
+              ]
+            ).map((opt) => (
+              <label
+                key={opt.mode}
+                style={styles.radioCard(titleMode === opt.mode)}
+                onClick={() => !uploading && setTitleMode(opt.mode)}
+              >
+                <input
+                  type="radio"
+                  name="title-policy-mode"
+                  value={opt.mode}
+                  checked={titleMode === opt.mode}
+                  onChange={() => setTitleMode(opt.mode)}
+                  disabled={uploading}
+                  style={{ marginTop: "2px", accentColor: "var(--color-accent)" }}
+                />
+                <div>
+                  <div style={styles.radioLabel}>{opt.label}</div>
+                  <div style={styles.radioDesc}>{opt.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          {titleMode === "auto" && (
+            <div style={styles.policyInfo}>
+              <span style={styles.policyInfoAccent}>●</span>
+              <span>
+                오늘 날짜 <strong style={styles.policyInfoAccent}>{todayYmd()}</strong>{" "}
+                가 모든 children page 제목 뒤에 자동으로 붙습니다.
+              </span>
+            </div>
+          )}
+
+          {titleMode === "prefix" && (
+            <div>
+              <TextInput
+                value={titlePrefix}
+                onChange={setTitlePrefix}
+                placeholder="예: [v1.3] 또는 KT-2026Q2"
+                label="Prefix 문자열 (필수)"
+                disabled={uploading}
+              />
+              {!titlePrefix.trim() && (
+                <div style={styles.policyError}>
+                  Prefix 모드에서는 문자열 입력이 필수입니다.
+                </div>
+              )}
+            </div>
+          )}
+
+          {titleMode === "suffix" && (
+            <div>
+              <TextInput
+                value={titleSuffix}
+                onChange={setTitleSuffix}
+                placeholder="예: (v1.3) 또는 -draft"
+                label="Suffix 문자열 (필수)"
+                disabled={uploading}
+              />
+              {!titleSuffix.trim() && (
+                <div style={styles.policyError}>
+                  Suffix 모드에서는 문자열 입력이 필수입니다.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* .md 파일 목록 */}
         <div style={styles.section}>
           <span style={styles.sectionTitle}>
@@ -685,7 +876,7 @@ export default function UploadPage() {
               {(pageEntries.length > 0
                 ? pageEntries
                 : collectedFiles.map<PageUploadEntry>((f) => ({
-                    name: f.title,
+                    name: applyTitlePolicy(f.title, titleMode, titlePrefix, titleSuffix),
                     path: f.path,
                     status: "waiting",
                   }))
