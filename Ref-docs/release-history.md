@@ -6,6 +6,18 @@
 
 ---
 
+## v1.3.9 — 2026-05-26
+
+**[Docs] Figma 토큰 발급 경로 안내 문구 수정**
+
+- SettingsPage의 Figma 연결 섹션 안내 문구를 최신 Figma UI에 맞게 갱신
+- 기존: `Figma → Settings → Personal access tokens`
+- 변경: `Figma → Help and account → Account settings → Security`
+
+**관련 커밋**: `[Docs] Figma 토큰 발급 경로 안내 문구 수정`
+
+---
+
 ## v1.3.8 — 2026-05-21
 
 **[Feature] Children Page 제목 정책 (Auto / Prefix / Suffix)**

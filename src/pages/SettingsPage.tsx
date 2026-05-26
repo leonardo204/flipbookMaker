@@ -506,7 +506,7 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
             <span style={styles.sectionHeader}>Figma 연결</span>
             <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
               Figma Personal Access Token을 입력하세요.
-              Figma → Settings → Personal access tokens에서 생성할 수 있습니다.
+              Figma → Help and account → Account settings → Security에서 생성할 수 있습니다.
             </span>
             <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
               <div style={{ flex: 1 }}>
