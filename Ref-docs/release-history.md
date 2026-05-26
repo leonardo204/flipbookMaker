@@ -6,6 +6,27 @@
 
 ---
 
+## v1.3.10 — 2026-05-26
+
+**[Fix] Confluence 미설정 시 UploadPage ↔ SettingsPage 무한 루프**
+
+- VOC: 변환 완료 후 Confluence 업로드 진입 → "Confluence 설정 필요" 차단 화면 →
+  설정 페이지로 이동 → 입력 없이 뒤로 클릭 시 UploadPage 차단 화면과 SettingsPage가
+  무한히 핑퐁되어 변환 결과(ConvertPage)로 복귀 불가
+- **원인**:
+  - `UploadPage` 차단 화면의 "뒤로" = `navigate(-1)` → history 직전인 `/settings`로 회귀
+  - `SettingsPage` "뒤로" = `navigate(returnPath="/upload")` → 다시 차단 화면
+  - history 스택이 `[/convert, /upload, /settings, /upload, /settings, ...]`로 쌓이며 출구 없음
+- **수정**:
+  - `UploadPage` 차단 화면 "뒤로"를 `navigate(-1)` 대신 명시적 경로(`workspaceDir` 있으면
+    `/convert`, 없으면 `/`)로 변경 — `src/pages/UploadPage.tsx`
+  - `SettingsPage` "뒤로"에 가드 추가: `from=/upload`인데 `confluenceVerified=false`이면
+    `/upload` 대신 안전한 경로(`/convert` 또는 `/`)로 우회 — `src/pages/SettingsPage.tsx`
+
+**관련 커밋**: `[Fix] Confluence 미설정 시 Upload↔Settings 무한 루프 (v1.3.10)`
+
+---
+
 ## v1.3.9 — 2026-05-26
 
 **[Docs] Figma 토큰 발급 경로 안내 문구 수정**

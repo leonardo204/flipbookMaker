@@ -611,10 +611,13 @@ export default function UploadPage() {
 
   // 설정 미완료 화면
   if (settingsIncomplete) {
+    // 뒤로 버튼: navigate(-1) 대신 명시적 경로로. workspaceDir 있으면 변환 결과(/convert),
+    // 없으면 home(/). settings ↔ /upload 핑퐁 무한 루프 차단 (v1.3.10 fix)
+    const backTarget = workflow.workspaceDir ? "/convert" : "/";
     return (
       <div style={styles.page}>
         <div style={styles.header}>
-          <Button variant="secondary" onClick={() => navigate(-1)}>
+          <Button variant="secondary" onClick={() => navigate(backTarget)}>
             뒤로
           </Button>
           <h1 style={styles.title}>Confluence 업로드</h1>

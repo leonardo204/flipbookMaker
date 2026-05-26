@@ -6,6 +6,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSettings } from "../contexts/SettingsContext";
+import { useWorkflow } from "../contexts/WorkflowContext";
 import Button from "../components/Button";
 import TextInput from "../components/TextInput";
 import StatusCard from "../components/StatusCard";
@@ -155,8 +156,18 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
   const navigate = useNavigate();
   const location = useLocation();
   // 진입 시 전달된 from으로 복귀. 없으면 home(/) — 메뉴(Cmd+,)에서 진입한 경우 등
-  const returnPath = (location.state as { from?: string } | null)?.from || "/";
+  const fromPath = (location.state as { from?: string } | null)?.from || "/";
   const { settings, updateSettings } = useSettings();
+  const { workflow } = useWorkflow();
+
+  // 뒤로 가는 시점에 동적으로 평가 — Confluence/Figma 미완료 상태로 from=/upload에 복귀하면
+  // 차단 화면이 반복되어 무한 루프가 발생하므로 안전한 경로로 우회 (v1.3.10 fix)
+  const computeBackTarget = (): string => {
+    if (fromPath === "/upload" && !settings.confluenceVerified) {
+      return workflow.workspaceDir ? "/convert" : "/";
+    }
+    return fromPath;
+  };
 
   // Claude Code (로컬 UI 상태)
   const [claudePathLocal, setClaudePathLocal] = useState(settings.claudePath);
@@ -353,7 +364,7 @@ export default function SettingsPage({ onClaudeConnected }: SettingsPageProps = 
         <div style={styles.topBar}>
           <button
             style={styles.backButton}
-            onClick={() => navigate(returnPath)}
+            onClick={() => navigate(computeBackTarget())}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = "var(--color-text)";
               e.currentTarget.style.backgroundColor = "var(--color-surface)";
